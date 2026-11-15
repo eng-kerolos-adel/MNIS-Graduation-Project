@@ -1,0 +1,9 @@
+[submodule "mnis-portal"]
+	path = mnis-portal
+	url = https://github.com/eng-kerolos-adel/MNIS-Portal.git
+[submodule "mnis_app"]
+	path = mnis_app
+	url = https://github.com/eng-kerolos-adel/MNIS-Flutter.git
+[submodule "mnis-api"]
+	path = mnis-api
+	url = https://github.com/eng-kerolos-adel/MNIS-Backend.git
