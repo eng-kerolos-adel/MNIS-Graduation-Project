@@ -1,0 +1,853 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────
+//  ENUMS
+// ─────────────────────────────────────────────
+
+enum Role {
+  DOCTOR
+  PHARMACIST
+  LAB_TECH
+  HOSPITAL_STAFF
+  EXECUTIVE
+  ADMIN
+  RECEPTIONIST
+  PATIENT
+}
+
+enum Sex {
+  MALE
+  FEMALE
+}
+
+enum VisitStatus {
+  WAITING
+  IN_CONSULTATION
+  COMPLETED
+  NO_SHOW
+}
+
+enum AppointmentType {
+  CLINIC
+  LAB
+}
+
+enum AppointmentStatus {
+  REQUESTED
+  CONFIRMED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+enum RenewalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum RxStatus {
+  DRAFT
+  SIGNED
+  VERIFIED
+  DISPENSED
+  REJECTED
+}
+
+enum SamplePriority {
+  ROUTINE
+  URGENT
+  STAT
+}
+
+enum SampleStatus {
+  AWAITING_COLLECTION
+  IN_TRANSIT
+  RECEIVED
+  PROCESSING
+  RESULTS_ENTERED
+  VERIFIED
+  REJECTED
+}
+
+enum ResultFlag {
+  NORMAL
+  LOW
+  HIGH
+  CRITICAL
+}
+
+enum BedStatus {
+  AVAILABLE
+  OCCUPIED
+  CLEANING
+  RESERVED
+  MAINTENANCE
+}
+
+enum ErStatus {
+  TRIAGE
+  IN_TREATMENT
+  AWAITING_BED
+  ADMITTED
+  DISCHARGED
+  REFERRED
+}
+
+enum DocumentStatus {
+  PENDING_REVIEW
+  REVIEWED
+}
+
+enum NfcCardStatus {
+  ACTIVE
+  REVOKED
+  REPLACED
+}
+
+enum ReferralTarget {
+  HOSPITAL
+  LAB
+  PHARMACY
+}
+
+enum ReferralUrgency {
+  ROUTINE    // goes into review queue
+  CRITICAL   // becomes immediate ER case
+}
+
+enum ReferralStatus {
+  PENDING      // sent, not yet acted on
+  ACCEPTED     // receiving dept accepted
+  REJECTED     // receiving dept rejected
+  COMPLETED    // action completed
+  CANCELLED    // doctor cancelled before action
+}
+
+enum BloodUnitStatus {
+  AVAILABLE
+  RESERVED
+  USED
+  DISCARDED
+  EXPIRED
+}
+
+enum OrCaseStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  POSTPONED
+}
+
+enum ConditionFlagStatus {
+  PENDING   // waiting for doctor review
+  APPROVED  // doctor approved the change
+  REJECTED  // doctor rejected it
+}
+
+enum ClaimStatus {
+  PENDING
+  SUBMITTED
+  APPROVED
+  REJECTED
+  SETTLED
+}
+
+enum NotifType {
+  APPOINTMENT_CONFIRMED
+  APPOINTMENT_REJECTED
+  LAB_RESULT_READY
+  PRESCRIPTION_DISPENSED
+  REFERRAL_UPDATED
+  RENEWAL_DECIDED
+  CARD_REVOKED
+  GENERAL
+}
+
+// ─────────────────────────────────────────────
+//  CORE USERS & AUTH
+// ─────────────────────────────────────────────
+
+model User {
+  id                 String    @id @default(uuid())
+  email              String?   @unique
+  passwordHash       String
+  patientId          String?   @unique
+  mustChangePassword Boolean   @default(false)
+  fullNameEn         String
+  fullNameAr         String
+  role               Role
+  licenseNo          String?
+  specialityEn       String?   // for doctors
+  specialityAr       String?
+  facilityEn         String?   // which hospital/clinic/lab they belong to
+  facilityAr         String?
+  isActive           Boolean   @default(true)
+  failedLogins       Int       @default(0)
+  lockedUntil        DateTime?
+  createdAt          DateTime  @default(now())
+
+  patient         Patient?          @relation(fields: [patientId], references: [id])
+  refreshTokens   RefreshToken[]
+  auditLogs       AuditLog[]
+  pushTokens      PushToken[]
+  schedules       DoctorSchedule[]  // only populated for DOCTOR role
+  referralsSent   Referral[]        @relation("ReferralSender")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  familyId  String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?
+  role         Role?
+  method       String
+  path         String
+  resourceType String?
+  resourceId   String?
+  statusCode   Int
+  ip           String?
+  at           DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, at])
+  @@index([resourceType, resourceId])
+}
+
+/// FCM push tokens for the Flutter citizen app.
+model PushToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String   // "android" | "ios"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Log of every push notification sent.
+model PushNotification {
+  id        String    @id @default(uuid())
+  userId    String
+  type      NotifType
+  titleEn   String
+  titleAr   String
+  bodyEn    String
+  bodyAr    String
+  data      Json      @default("{}")
+  sentAt    DateTime  @default(now())
+  readAt    DateTime?
+
+  @@index([userId, sentAt])
+}
+
+// ─────────────────────────────────────────────
+//  PATIENT (CITIZEN)
+// ─────────────────────────────────────────────
+
+model Patient {
+  id                String    @id @default(uuid())
+  mti               String    @unique
+  nationalIdEnc     String
+  nationalIdIdx     String    @unique
+  fullNameEn        String
+  fullNameAr        String
+  sex               Sex
+  birthDate         DateTime
+  bloodType         String?
+  /// Structured address for GIS/epidemiology analytics
+  governorate       String?   // e.g. "CAIRO", "GIZA", "ALEXANDRIA" …
+  city              String?
+  district          String?
+  /// Legacy free-text address (kept for backward compat)
+  addressEn         String?
+  addressAr         String?
+  photoUrl          String?
+  insuranceActive   Boolean   @default(false)
+  organDonor        Boolean   @default(false)
+  /// JSON arrays of { en, ar } bilingual objects
+  chronicConditions Json      @default("[]")
+  allergies         Json      @default("[]")
+  createdAt         DateTime  @default(now())
+
+  user            User?
+  appointments    Appointment[]
+  renewals        RenewalRequest[]
+  shareTokens     ShareToken[]
+  documents       Document[]
+  visits          Visit[]
+  prescriptions   Prescription[]
+  samples         LabSample[]
+  beds            Bed[]
+  erCases         ErCase[]
+  nfcCards        NfcCard[]
+  referrals       Referral[]
+  conditionFlags  ConditionFlag[]
+  pharmacyClaims  PharmacyClaim[]
+  allowances      ChronicAllowance[]
+  radiology       RadiologyUpload[]
+  orCases         OrCase[]
+
+  @@index([fullNameEn])
+  @@index([governorate])
+}
+
+// ─────────────────────────────────────────────
+//  NFC / QR EMERGENCY CARD
+// ─────────────────────────────────────────────
+
+/// One card per patient. Reception prints it when opening the account.
+/// A citizen can request a replacement (old card is REVOKED → new ACTIVE card created).
+model NfcCard {
+  id            String        @id @default(uuid())
+  patientId     String
+  tokenHash     String        @unique  // SHA-256 of the raw token printed on card
+  status        NfcCardStatus @default(ACTIVE)
+  printedById   String?       // receptionist who printed it
+  printedAt     DateTime      @default(now())
+  revokedById   String?       // who revoked it (receptionist or system)
+  revokedAt     DateTime?
+  revokeReason  String?       // "LOST" | "STOLEN" | "DAMAGED" | "REPLACED"
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([patientId])
+}
+
+// ─────────────────────────────────────────────
+//  DOCTOR SCHEDULE & APPOINTMENTS
+// ─────────────────────────────────────────────
+
+/// A doctor's weekly recurring availability template.
+/// dayOfWeek: 0=Sunday … 6=Saturday (ISO: 1=Monday … 7=Sunday, but we use JS convention)
+model DoctorSchedule {
+  id          String   @id @default(uuid())
+  doctorId    String
+  dayOfWeek   Int      // 0–6
+  startTime   String   // "HH:MM" 24h
+  endTime     String   // "HH:MM" 24h
+  slotMinutes Int      @default(20) // duration per appointment slot
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  doctor User @relation(fields: [doctorId], references: [id])
+
+  @@unique([doctorId, dayOfWeek, startTime])
+  @@index([doctorId])
+}
+
+model Visit {
+  id          String      @id @default(uuid())
+  patientId   String
+  ticketNo    String
+  reasonEn    String
+  reasonAr    String
+  status      VisitStatus @default(WAITING)
+  isEmergency Boolean     @default(false)
+  doctorId    String?
+  arrivedAt   DateTime    @default(now())
+  calledAt    DateTime?
+  completedAt DateTime?
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([status, isEmergency, arrivedAt])
+}
+
+model Appointment {
+  id            String            @id @default(uuid())
+  patientId     String
+  doctorId      String?
+  type          AppointmentType   @default(CLINIC)
+  testPanel     String?           // set when type = LAB
+  preferredDate DateTime
+  reason        String
+  status        AppointmentStatus @default(REQUESTED)
+  scheduledAt   DateTime?
+  decidedById   String?
+  decidedAt     DateTime?
+  note          String?
+  createdAt     DateTime          @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([status, preferredDate])
+  @@index([patientId])
+  @@index([doctorId, status])
+  @@index([type, status])
+}
+
+// ─────────────────────────────────────────────
+//  PRESCRIPTIONS
+// ─────────────────────────────────────────────
+
+model Prescription {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  patientId     String
+  physicianId   String
+  diagnosisEn   String
+  diagnosisAr   String
+  icd10         String?
+  status        RxStatus @default(DRAFT)
+  signedAt      DateTime?
+  signatureHash String?
+  verifiedById  String?
+  verifiedAt    DateTime?
+  dispensedById String?
+  dispensedAt   DateTime?
+  rejectReason  String?
+  /// Chronic prescription flag — enables monthly allowance tracking
+  isChronic     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  patient Patient            @relation(fields: [patientId], references: [id])
+  items   PrescriptionItem[]
+  claim   PharmacyClaim?
+  renewals RenewalRequest[]
+
+  @@index([status, createdAt])
+  @@index([physicianId])
+  @@index([patientId])
+}
+
+model PrescriptionItem {
+  id                  String  @id @default(uuid())
+  prescriptionId      String
+  nameEn              String
+  nameAr              String
+  form                String?
+  dose                String
+  frequencyEn         String
+  frequencyAr         String
+  durationDays        Int
+  quantity            Int
+  substitutionAllowed Boolean @default(true)
+  /// Populated when isChronic=true: monthly unit allowance
+  monthlyAllowance    Int?
+
+  prescription Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+}
+
+model RenewalRequest {
+  id                String        @id @default(uuid())
+  patientId         String
+  prescriptionId    String
+  status            RenewalStatus @default(PENDING)
+  decidedById       String?
+  decidedAt         DateTime?
+  note              String?
+  newPrescriptionId String?
+  createdAt         DateTime      @default(now())
+
+  patient      Patient      @relation(fields: [patientId], references: [id])
+  prescription Prescription @relation(fields: [prescriptionId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([patientId])
+}
+
+// ─────────────────────────────────────────────
+//  PHARMACY — CLAIMS, ALLOWANCES, SETTLEMENT
+// ─────────────────────────────────────────────
+
+/// Insurance claim generated when a prescription is dispensed.
+model PharmacyClaim {
+  id                  String      @id @default(uuid())
+  prescriptionId      String      @unique
+  patientId           String
+  dispensedById       String      // pharmacist user id
+  dispensedAt         DateTime    @default(now())
+  totalAmount         Float       // total value of dispensed items (EGP)
+  coveragePct         Float       // insurance coverage percentage 0–100
+  insuranceAmount     Float       // computed: totalAmount * coveragePct / 100
+  patientBalance      Float       // computed: totalAmount - insuranceAmount
+  status              ClaimStatus @default(PENDING)
+  settlementId        String?     // set once included in a settlement batch
+
+  prescription Prescription        @relation(fields: [prescriptionId], references: [id])
+  patient      Patient             @relation(fields: [patientId], references: [id])
+  settlement   PharmacySettlement? @relation(fields: [settlementId], references: [id])
+
+  @@index([patientId])
+  @@index([status])
+  @@index([settlementId])
+}
+
+/// Monthly reconciliation batch submitted to the insurance company.
+model PharmacySettlement {
+  id              String    @id @default(uuid())
+  periodYear      Int       // e.g. 2026
+  periodMonth     Int       // 1–12
+  totalClaims     Int       // count of claims in this batch
+  totalAmount     Float     // sum of insuranceAmount across all claims
+  submittedById   String?
+  submittedAt     DateTime?
+  status          ClaimStatus @default(PENDING)
+  createdAt       DateTime  @default(now())
+
+  claims PharmacyClaim[]
+
+  @@unique([periodYear, periodMonth])
+}
+
+/// Monthly chronic-medication allowance per patient per prescription item.
+model ChronicAllowance {
+  id             String   @id @default(uuid())
+  patientId      String
+  prescriptionId String   // the chronic prescription
+  itemId         String   // PrescriptionItem id
+  nameEn         String
+  nameAr         String
+  monthlyLimit   Int      // units allowed per month
+  consumed       Int      @default(0) // units dispensed this month
+  periodYear     Int
+  periodMonth    Int
+  resetAt        DateTime // start of next month
+  createdAt      DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@unique([patientId, itemId, periodYear, periodMonth])
+  @@index([patientId])
+}
+
+/// Pharmacy drug inventory.
+model DrugInventory {
+  id          String   @id @default(uuid())
+  nameEn      String
+  nameAr      String
+  form        String?
+  batchNo     String?
+  expiryDate  DateTime?
+  quantity    Int      @default(0)
+  reorderAt   Int      @default(10) // low-stock threshold
+  unitCost    Float?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@index([nameEn])
+}
+
+// ─────────────────────────────────────────────
+//  LAB — SAMPLES, RESULTS, REAGENTS, QC, RADIOLOGY
+// ─────────────────────────────────────────────
+
+model LabSample {
+  id            String         @id @default(uuid())
+  barcode       String         @unique
+  patientId     String
+  panelEn       String
+  panelAr       String
+  sampleTypeEn  String
+  sampleTypeAr  String
+  orderedById   String
+  priority      SamplePriority @default(ROUTINE)
+  status        SampleStatus   @default(AWAITING_COLLECTION)
+  collectedAt   DateTime       @default(now())
+  receivedAt    DateTime?
+  enteredById   String?
+  verifiedById  String?
+  verifiedAt    DateTime?
+  rejectReason  String?
+  referralId    String?        // if this sample was ordered via a referral
+
+  patient         Patient         @relation(fields: [patientId], references: [id])
+  results         LabResult[]
+  conditionFlags  ConditionFlag[]
+
+  @@index([status, priority])
+  @@index([patientId])
+}
+
+model LabResult {
+  id         String     @id @default(uuid())
+  sampleId   String
+  analyteEn  String
+  analyteAr  String
+  value      Float
+  unit       String
+  refLow     Float
+  refHigh    Float
+  flag       ResultFlag
+
+  sample LabSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+}
+
+/// Lab technician flagging a new allergy/condition from a result for doctor review.
+model ConditionFlag {
+  id            String              @id @default(uuid())
+  patientId     String
+  sampleId      String?             // the sample that triggered this flag
+  flaggedById   String              // LAB_TECH user id
+  conditionEn   String
+  conditionAr   String
+  conditionType String              // "ALLERGY" | "CHRONIC_CONDITION"
+  status        ConditionFlagStatus @default(PENDING)
+  reviewedById  String?             // DOCTOR who reviewed
+  reviewedAt    DateTime?
+  reviewNote    String?
+  createdAt     DateTime            @default(now())
+
+  patient Patient    @relation(fields: [patientId], references: [id])
+  sample  LabSample? @relation(fields: [sampleId], references: [id])
+
+  @@index([patientId, status])
+  @@index([status])
+}
+
+/// Reagent / consumable inventory for the lab.
+model Reagent {
+  id             String   @id @default(uuid())
+  nameEn         String
+  nameAr         String
+  catalogNo      String?
+  quantity       Float    // current stock
+  unit           String   // "mL" | "units" | "vials" …
+  lowStockAt     Float    @default(10) // alert threshold
+  expiryDate     DateTime?
+  supplierEn     String?
+  supplierAr     String?
+  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now())
+
+  @@index([nameEn])
+}
+
+/// Lab instrument/analyser tracked for QC/calibration.
+model LabInstrument {
+  id             String              @id @default(uuid())
+  nameEn         String
+  nameAr         String
+  serialNo       String?
+  locationEn     String?
+  locationAr     String?
+  calibIntervalDays Int             @default(30)
+  isActive       Boolean            @default(true)
+  createdAt      DateTime           @default(now())
+
+  calibrations CalibrationRecord[]
+}
+
+/// Individual calibration run for an instrument.
+model CalibrationRecord {
+  id             String    @id @default(uuid())
+  instrumentId   String
+  performedById  String    // LAB_TECH
+  performedAt    DateTime  @default(now())
+  nextDueAt      DateTime
+  result         String    // "PASS" | "FAIL" | "ADJUSTED"
+  notes          String?
+
+  instrument LabInstrument @relation(fields: [instrumentId], references: [id])
+
+  @@index([instrumentId, performedAt])
+}
+
+/// Radiology image/PDF uploads by lab technicians (plain files, not DICOM).
+model RadiologyUpload {
+  id            String   @id @default(uuid())
+  patientId     String
+  uploadedById  String   // LAB_TECH user id
+  titleEn       String
+  titleAr       String
+  mimeType      String   // "image/jpeg" | "image/png" | "application/pdf"
+  fileSizeBytes Int
+  fileBase64    String   @db.Text
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, createdAt])
+}
+
+// ─────────────────────────────────────────────
+//  HOSPITAL — BEDS, ER, BLOOD BANK, OR
+// ─────────────────────────────────────────────
+
+model Bed {
+  id         String    @id @default(uuid())
+  wardEn     String
+  wardAr     String
+  bedNumber  String    @unique
+  status     BedStatus @default(AVAILABLE)
+  patientId  String?
+  acuity     Int?
+  admittedAt DateTime?
+
+  patient  Patient? @relation(fields: [patientId], references: [id])
+  orCases  OrCase[]
+}
+
+model ErCase {
+  id          String   @id @default(uuid())
+  patientId   String
+  arrivalEn   String
+  arrivalAr   String
+  complaintEn String
+  complaintAr String
+  acuity      Int
+  vitals      Json     @default("{}")
+  status      ErStatus @default(TRIAGE)
+  areaEn      String?
+  areaAr      String?
+  arrivedAt   DateTime @default(now())
+  /// Populated when this ER case was triggered by a critical referral
+  referralId  String?
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([status, acuity])
+}
+
+/// Per-unit blood bank inventory (not just totals per type).
+model BloodUnit {
+  id           String          @id @default(uuid())
+  bloodType    String          // "A+", "B-", "O+", "AB+" etc.
+  collectedAt  DateTime
+  expiresAt    DateTime
+  status       BloodUnitStatus @default(AVAILABLE)
+  donorName    String?
+  donorNid     String?         // encrypted national ID of donor (optional)
+  unitCode     String          @unique
+  usedForId    String?         // patient id if used
+  usedAt       DateTime?
+  disposedAt   DateTime?
+  notes        String?
+
+  @@index([bloodType, status])
+  @@index([expiresAt, status])
+}
+
+/// Operating-room scheduling (surgical theater).
+model OrCase {
+  id             String      @id @default(uuid())
+  patientId      String
+  surgeonId      String      // DOCTOR user id
+  bedId          String?     // bed/theater bed linked
+  procedureEn    String
+  procedureAr    String
+  theaterNo      String?     // OR theater identifier
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  status         OrCaseStatus @default(SCHEDULED)
+  anaesthesiaEn  String?
+  anaesthesiaAr  String?
+  notes          String?
+  createdById    String
+  createdAt      DateTime    @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id])
+  bed     Bed?    @relation(fields: [bedId], references: [id])
+
+  @@index([scheduledStart, status])
+  @@index([surgeonId])
+}
+
+// ─────────────────────────────────────────────
+//  REFERRALS (bidirectional, close the loop)
+// ─────────────────────────────────────────────
+
+/// A doctor refers a patient to hospital / lab / pharmacy.
+/// When the receiving dept acts, the doctor is notified.
+model Referral {
+  id             String          @id @default(uuid())
+  patientId      String
+  senderId       String          // DOCTOR user id
+  target         ReferralTarget
+  urgency        ReferralUrgency @default(ROUTINE)
+  status         ReferralStatus  @default(PENDING)
+  reasonEn       String
+  reasonAr       String
+  /// For LAB referrals: the test panel requested
+  testPanel      String?
+  /// For PHARMACY referrals: medication name
+  medicationEn   String?
+  medicationAr   String?
+  /// For HOSPITAL referrals: department
+  departmentEn   String?
+  departmentAr   String?
+  decidedById    String?         // who acted on it at the receiving dept
+  decidedAt      DateTime?
+  responseNoteEn String?
+  responseNoteAr String?
+  /// If CRITICAL referral → ER case created, link stored here
+  erCaseId       String?
+  createdAt      DateTime        @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id])
+  sender  User    @relation("ReferralSender", fields: [senderId], references: [id])
+
+  @@index([patientId])
+  @@index([senderId, status])
+  @@index([target, status])
+}
+
+// ─────────────────────────────────────────────
+//  DOCUMENTS (citizen-uploaded externals)
+// ─────────────────────────────────────────────
+
+model Document {
+  id            String         @id @default(uuid())
+  patientId     String
+  label         String
+  mimeType      String
+  fileSizeBytes Int
+  fileBase64    String         @db.Text
+  status        DocumentStatus @default(PENDING_REVIEW)
+  reviewedById  String?
+  reviewedAt    DateTime?
+  createdAt     DateTime       @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, createdAt])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────
+//  SHARE TOKEN (QR record sharing)
+// ─────────────────────────────────────────────
+
+model ShareToken {
+  id        String    @id @default(uuid())
+  patientId String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  usedById  String?
+  createdAt DateTime  @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([patientId])
+}
