@@ -1,0 +1,12 @@
+# Copy this file to android/key.properties (same folder as this file) and fill
+# in your real values. NEVER commit the real key.properties or the .jks file —
+# both are already listed in .gitignore.
+#
+# Create the keystore once with (keep the .jks file safe — losing it means you
+# can never publish an update to the same Play Store listing again):
+#   keytool -genkey -v -keystore ~/mnis-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias mnis
+#
+storeFile=/absolute/path/to/mnis-upload-key.jks
+storePassword=CHANGE_ME
+keyAlias=mnis
+keyPassword=CHANGE_ME
