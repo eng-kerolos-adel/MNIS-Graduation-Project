@@ -41,7 +41,7 @@ abstract class _$NotificationsNotifier
   FutureOr<List<AppNotification>> build();
   @$mustCallSuper
   @override
-  void runBuild() {
+  WhenComplete runBuild() {
     final ref = this.ref
         as $Ref<AsyncValue<List<AppNotification>>, List<AppNotification>>;
     final element = ref.element as $ClassProviderElement<
@@ -49,6 +49,6 @@ abstract class _$NotificationsNotifier
         AsyncValue<List<AppNotification>>,
         Object?,
         Object?>;
-    element.handleCreate(ref, build);
+    return element.handleCreate(ref, build);
   }
 }

@@ -16,6 +16,8 @@ analyzer:
   exclude:
     - "**/*.g.dart"
     - "**/*.freezed.dart"
+    - build/**
+    - android/**
   errors:
     avoid_returning_null_for_void: ignore
     deprecated_member_use: ignore

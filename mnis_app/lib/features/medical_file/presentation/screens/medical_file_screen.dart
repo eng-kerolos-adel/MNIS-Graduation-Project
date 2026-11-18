@@ -577,7 +577,7 @@ class _ClinicalTimeline extends StatelessWidget {
   }
 }
 
-// ─── Sovereign Interconnectivity Hub (4 Ministries, Referrals, PACS, Chronic, Audit) ───
+// ─── Sovereign Interconnectivity Hub (Referrals, PACS, Chronic, Audit) ───
 
 class _SovereignSummaryHub extends StatelessWidget {
   final ColorScheme cs;
@@ -600,7 +600,6 @@ class _SovereignSummaryHub extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subsidy = (hub['familySubsidy'] as Map?)?.cast<String, dynamic>();
     final chronic = _list('chronicAllowances');
     final referrals = _list('referrals');
     final radiology = _list('radiology');
@@ -609,89 +608,7 @@ class _SovereignSummaryHub extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 1. Quad-Ministry Family & Ration Card Status (Ministry of Supply 5-member cap)
-        if (subsidy != null) ...[
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: cs.surfaceContainerLowest,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: (subsidy['rationCapExceeded'] == true)
-                    ? cs.error.withOpacity(0.4)
-                    : cs.primary.withOpacity(0.25),
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    StatusBadge(
-                      label: (subsidy['rationCapExceeded'] == true)
-                          ? (isAr ? 'موقوف الإضافة (> 5 أفراد)' : 'Capped (> 5 Members)')
-                          : (isAr ? 'مستحق للتموين (≤ 5 أفراد)' : 'Eligible (≤ 5 Members)'),
-                      backgroundColor: (subsidy['rationCapExceeded'] == true)
-                          ? cs.errorContainer
-                          : cs.secondaryContainer,
-                      textColor: (subsidy['rationCapExceeded'] == true)
-                          ? cs.onErrorContainer
-                          : cs.onSecondaryContainer,
-                      fontSize: 10,
-                    ),
-                    Row(
-                      children: [
-                        Text(
-                          isAr
-                              ? 'ربط وزارة التموين والأسرة'
-                              : 'Ministry of Supply & Family Sync',
-                          style: AppTypography.headlineSm.copyWith(color: cs.primary),
-                        ),
-                        const SizedBox(width: 6),
-                        Icon(Icons.family_restroom_rounded, size: 18, color: cs.primary),
-                      ],
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  isAr
-                      ? (subsidy['messageAr']?.toString() ?? '')
-                      : (subsidy['messageEn']?.toString() ?? ''),
-                  style: AppTypography.bodySm.copyWith(color: cs.onSurfaceVariant),
-                  textAlign: TextAlign.right,
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  alignment: WrapAlignment.end,
-                  children: [
-                    _MiniMetricChip(
-                      cs: cs,
-                      label: isAr ? 'إجمالي الأسرة' : 'Family Size',
-                      value: '${subsidy['totalMembers'] ?? 1}',
-                    ),
-                    _MiniMetricChip(
-                      cs: cs,
-                      label: isAr ? 'المشمولون بالتموين' : 'Subsidized',
-                      value: '${subsidy['eligibleMembers'] ?? 1} / ${subsidy['maxSubsidizedLimit'] ?? 5}',
-                    ),
-                    _MiniMetricChip(
-                      cs: cs,
-                      label: isAr ? 'المحافظة' : 'Governorate',
-                      value: '${subsidy['governorate'] ?? 'Cairo'}',
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-        ],
-
-        // 2. Monthly Chronic Medication Allowances
+        // 1. Monthly Chronic Medication Allowances
         if (chronic.isNotEmpty) ...[
           Container(
             padding: const EdgeInsets.all(14),
@@ -763,7 +680,7 @@ class _SovereignSummaryHub extends StatelessWidget {
           const SizedBox(height: 12),
         ],
 
-        // 3. Clinical Referrals & PACS Radiology
+        // 2. Clinical Referrals & PACS Radiology
         if (referrals.isNotEmpty || radiology.isNotEmpty) ...[
           Container(
             padding: const EdgeInsets.all(14),
@@ -877,7 +794,7 @@ class _SovereignSummaryHub extends StatelessWidget {
           const SizedBox(height: 12),
         ],
 
-        // 4. Sovereign Security Access Log
+        // 3. Sovereign Security Access Log
         if (accessLogs.isNotEmpty) ...[
           Container(
             padding: const EdgeInsets.all(14),
@@ -951,46 +868,6 @@ class _SovereignSummaryHub extends StatelessWidget {
           ),
         ],
       ],
-    );
-  }
-}
-
-class _MiniMetricChip extends StatelessWidget {
-  final ColorScheme cs;
-  final String label;
-  final String value;
-
-  const _MiniMetricChip({
-    required this.cs,
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            value,
-            style: AppTypography.labelMd.copyWith(
-              color: cs.primary,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '$label:',
-            style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant),
-          ),
-        ],
-      ),
     );
   }
 }

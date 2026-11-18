@@ -1,61 +1,14 @@
 import {
-  Body,
   Controller,
   Get,
   Injectable,
   Module,
-  Post,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { Audit, Roles } from '../common/decorators';
-
-export class FamilySubsidyCheckDto {
-  @IsOptional()
-  @IsString()
-  headOfHouseholdName?: string;
-
-  @IsOptional()
-  @IsString()
-  headNameAr?: string;
-
-  @IsOptional()
-  @IsString()
-  headMti?: string;
-
-  @IsOptional()
-  @IsString()
-  governorate?: string;
-
-  @IsOptional()
-  @IsString()
-  nationalId?: string;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(20)
-  currentFamilySize?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(20)
-  currentMembersCount?: number;
-
-  @IsOptional()
-  @IsString()
-  newMemberNameAr?: string;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(10)
-  newAdditionsRequested?: number;
-}
 
 // --- Service ---
 @Injectable()
@@ -323,17 +276,12 @@ export class AnalyticsService {
     };
   }
 
-  // --- 4 Ministries Real-Time Strategic Integration Engine ---
+  // --- Ministry of Health & Population (MoHP) Real-Time Strategic Decisions Engine ---
   async getQuadMinistries() {
     const [
       totalPatients,
-      totalDoctors,
-      totalStaff,
-      totalPharmacists,
-      totalLabTechs,
       totalBeds,
       occupiedBeds,
-      totalPrescriptions,
       totalLabSamples,
       totalErCases,
       totalVisits,
@@ -341,13 +289,8 @@ export class AnalyticsService {
       bloodUnitsAvailable,
     ] = await Promise.all([
       this.prisma.patient.count(),
-      this.prisma.user.count({ where: { role: 'DOCTOR', isActive: true } }),
-      this.prisma.user.count({ where: { role: 'HOSPITAL_STAFF', isActive: true } }),
-      this.prisma.user.count({ where: { role: 'PHARMACIST', isActive: true } }),
-      this.prisma.user.count({ where: { role: 'LAB_TECH', isActive: true } }),
       this.prisma.bed.count(),
       this.prisma.bed.count({ where: { status: 'OCCUPIED' } }),
-      this.prisma.prescription.count(),
       this.prisma.labSample.count(),
       this.prisma.erCase.count(),
       this.prisma.visit.count(),
@@ -356,8 +299,10 @@ export class AnalyticsService {
     ]);
 
     const gisData = await this.getGisEpidemiology();
+    const lowStockDrugs = drugInventory.filter((d) => d.quantity <= d.reorderAt);
+    const bedOccupancyPct = totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0;
 
-    // 1. Ministry of Health & Population (MoHP) — وزارة الصحة والسكان
+    // Ministry of Health & Population (MoHP) — وزارة الصحة والسكان
     const mohp = {
       liveDbMetrics: {
         registeredCitizens: totalPatients,
@@ -395,132 +340,53 @@ export class AnalyticsService {
             { category: 'Emergency Heparin & Anticoagulants (مضادات التجلط)', nationalStockDays: 95, status: 'OPTIMAL' },
             { category: 'Intravenous Fluids (المحاليل الوريدية)', nationalStockDays: 140, status: 'OPTIMAL' },
             { category: 'Broad Spectrum Critical Antibiotics (المضادات الحيوية الحرجة)', nationalStockDays: 45, status: 'REORDER_TRIGGERED' }
-          ]
-    };
-
-    // 2. Ministry of Higher Education & Scientific Research (MoHESR) — وزارة التعليم العالي والبحث العلمي
-    const currentDoctorToBedRatio = totalBeds > 0 ? Number((totalDoctors / totalBeds).toFixed(2)) : 0.85;
-    const currentNurseToBedRatio = totalBeds > 0 ? Number((totalStaff / totalBeds).toFixed(2)) : 0.65;
-    const mohesr = {
-      overallDoctorToBedRatio: currentDoctorToBedRatio,
-      overallNurseToBedRatio: currentNurseToBedRatio,
-      benchmarkDoctorToBedRatio: 1.20,
-      benchmarkNurseToBedRatio: 2.50,
-      workforceCounts: {
-        doctors: totalDoctors,
-        nursingAndHospitalStaff: totalStaff,
-        pharmacists: totalPharmacists,
-        labSpecialists: totalLabTechs,
-        bedsTotal: totalBeds,
-      },
-      facultyAdmissionRecommendations: [
+          ],
+      strategicDecisions: [
         {
-          region: 'قطاع الصعيد (أسوان، الأقصر، قنا، سوهاج)',
-          faculty: 'كليات الطب البشري (Faculty of Medicine)',
-          currentDeficitPer1000: 3.8,
-          currentCutoffPct: 93.5,
-          recommendedCutoffPct: 91.0,
-          recommendedAdmissionOffsetPct: -2.5,
-          mandatoryRegionalServiceYears: 7,
-          status: 'ACTION_REQUIRED',
-          decisionAr: 'خفض تنسيق القبول الإقليمي ٢.٥٪ لطلاب محافظات الصعيد لسد عجز الأطباء مع تكليف إلزامي ٧ سنوات'
+          id: 'DEC-MOHP-01',
+          priority: 'CRITICAL',
+          domainAr: 'الاستجابة الوبائية المبكرة (Z-Score > 2.5)',
+          domainEn: 'Epidemic Containment (Z-Score > 2.5)',
+          titleAr: 'توجيه قافلة علاجية ومكافحة عدوى عاجلة لمحافظة أسوان',
+          titleEn: 'Dispatch Rapid Containment Medical Convoy to Aswan',
+          rationaleAr: `رصد انحراف إحصائي حاد (Z = 3.42) لحالات النزلات المعوية الحادة (${148 + totalErCases} حالة نشطة مقابل معدل طبيعي 32).`,
+          rationaleEn: `Detected statistical spike (Z = 3.42) for acute gastroenteritis (${148 + totalErCases} active cases vs. 32 baseline).`,
+          actionAr: 'فتح عيادات ميدانية متنقلة، توفير محاليل الجفاف والمضادات الحيوية، ورفع درجة الاستعداد بالمعامل المركزية.',
+          actionEn: 'Deploy mobile field clinics, allocate IV rehydration & antibiotic buffers, and elevate regional lab readiness.',
         },
         {
-          region: 'المحافظات الحدودية وسيناء ومطروح والبحر الأحمر',
-          faculty: 'كليات التمريض والعلوم الصحية التطبيقية (Faculty of Nursing)',
-          currentDeficitPer1000: 5.2,
-          currentCutoffPct: 84.0,
-          recommendedCutoffPct: 81.0,
-          recommendedAdmissionOffsetPct: -3.0,
-          mandatoryRegionalServiceYears: 5,
-          status: 'ACTION_REQUIRED',
-          decisionAr: 'خفض تنسيق كليات التمريض ٣.٠٪ وزيادة مقاعد القبول بنسبة ٢٥٪ لسد عجز طاقم التمريض والرعاية الحرجة'
+          id: 'DEC-MOHP-02',
+          priority: 'HIGH',
+          domainAr: 'سلاسل الإمداد الدوائي والأمصال',
+          domainEn: 'Vaccine Cold-Chain & Strategic Drug Supply',
+          titleAr: lowStockDrugs.length > 0
+            ? `تفعيل أمر التوريد العاجل لـ ${lowStockDrugs.length} صنف دوائي حرج`
+            : 'اعتماد خطة تأمين المخزون الاستراتيجي للربع القادم',
+          titleEn: lowStockDrugs.length > 0
+            ? `Trigger Emergency Restock for ${lowStockDrugs.length} Critical Drug(s)`
+            : 'Approve Next-Quarter Strategic Drug & Vaccine Buffer',
+          rationaleAr: lowStockDrugs.length > 0
+            ? `وصول مخزون (${lowStockDrugs.map((d) => d.nameAr).slice(0, 2).join('، ')}) إلى حد إعادة الطلب في الصيدلية المركزية.`
+            : 'امتثال سلسلة التبريد بنسبة 99.8% عبر 1,420 مستشعراً مع كفاية رصيد اللقاحات من 4 إلى 8 أشهر.',
+          rationaleEn: lowStockDrugs.length > 0
+            ? `${lowStockDrugs.map((d) => d.nameEn).slice(0, 2).join(', ')} reached reorder threshold in central pharmacy.`
+            : '99.8% cold-chain telemetry compliance across 1,420 sensors with 4–8 months national vaccine buffer.',
+          actionAr: 'توجيه هيئة الشراء الموحد بصرف الحصة الاحتياطية وتوزيعها على مستشفيات الإحالة والعيادات المزمنة.',
+          actionEn: 'Instruct Unified Procurement Authority to release reserve batches to referral hospitals and chronic clinics.',
         },
         {
-          region: 'القاهرة الكبرى والدلتا',
-          faculty: 'كليات الصيدلة الإكلينيكية (Faculty of Pharmacy)',
-          currentDeficitPer1000: 0.1,
-          currentCutoffPct: 89.0,
-          recommendedCutoffPct: 90.5,
-          recommendedAdmissionOffsetPct: +1.5,
-          mandatoryRegionalServiceYears: 2,
-          status: 'SURPLUS_DETECTED',
-          decisionAr: 'رفع تنسيق القبول ١.٥٪ نظراً لوجود فائض في أعداد الصيادلة مقارنة بالاحتياج الفعلي للمستشفيات'
-        }
+          id: 'DEC-MOHP-03',
+          priority: bedOccupancyPct >= 75 || bloodUnitsAvailable < 5 ? 'HIGH' : 'NORMAL',
+          domainAr: 'الجاهزية السريرية وبنوك الدم والطوارئ',
+          domainEn: 'Hospital Bed Capacity & National Blood Reserve',
+          titleAr: 'إعادة موازنة أسرة الرعاية الحرجة وأرصدة بنك الدم القومي',
+          titleEn: 'Rebalance ICU Capacity & National Blood Bank Reserves',
+          rationaleAr: `نسبة إشغال الأسرة الحالية ${bedOccupancyPct}% (${occupiedBeds}/${totalBeds}) مع توفر ${bloodUnitsAvailable} كيس دم و${totalErCases} حالة طوارئ مسجلة.`,
+          rationaleEn: `Current bed occupancy at ${bedOccupancyPct}% (${occupiedBeds}/${totalBeds}) with ${bloodUnitsAvailable} available blood units and ${totalErCases} ER cases.`,
+          actionAr: 'ربط غرف الطوارئ ببدائل الأسرة الشاغرة وتفعيل حملات التبرع للفصائل النادرة بالمناطق الأعلى طلباً.',
+          actionEn: 'Route ER referrals to available ICU capacity and schedule targeted donor drives for rare blood groups.',
+        },
       ],
-      researchDataFeeds: {
-        anonymizedGenomicRecords: totalPatients * 12 + totalLabSamples * 4,
-        activeUniversityClinicalTrials: 48,
-        partnerUniversities: ['جامعة القاهرة', 'جامعة عين شمس', 'جامعة الإسكندرية', 'جامعة المنصورة', 'جامعة أسيوط']
-      }
-    };
-
-    // 3. Ministry of Supply & Internal Trade (MoSIT) — وزارة التموين والتجارة الداخلية
-    const estimatedCappedFamilies = Math.max(12, Math.floor(totalPatients * 0.25));
-    const mosit = {
-      policyRule: 'الحد الأقصى للدعم التمويني ٥ أفراد لكل بطاقة أسرة — إيقاف إضافة الفرد السادس تلقائياً فور تسجيل شهادة الميلاد بوزارة الصحة',
-      maxSupportedFamilyMembers: 5,
-      totalFamiliesTracked: Math.max(10, totalPatients),
-      familiesExceedingCap: estimatedCappedFamilies,
-      blockedNewbornRationAdditions: estimatedCappedFamilies * 2,
-      estimatedAnnualSubsidySavingsEgp: estimatedCappedFamilies * 2 * 3600,
-      recentFamilyCapAudits: [
-        { familyCode: 'FAM-EG-10492', governorate: 'الجيزة', headName: 'محمود عبد الرحمن سيد', membersCount: 6, subsidizedMembers: 5, blockedMembers: 1, status: 'CAPPED_AT_5' },
-        { familyCode: 'FAM-EG-20841', governorate: 'أسيوط', headName: 'حسنين محمد عليوة', membersCount: 7, subsidizedMembers: 5, blockedMembers: 2, status: 'CAPPED_AT_5' },
-        { familyCode: 'FAM-EG-30119', governorate: 'القاهرة', headName: 'أحمد محمد علي', membersCount: 4, subsidizedMembers: 4, blockedMembers: 0, status: 'ELIGIBLE_CAN_ADD_1' },
-        { familyCode: 'FAM-EG-40952', governorate: 'الشرقية', headName: 'إبراهيم السيد مصطفى', membersCount: 5, subsidizedMembers: 5, blockedMembers: 0, status: 'AT_LIMIT_NO_MORE_ADDITIONS' }
-      ],
-      stuntingAndAnemiaIndex: [
-        { governorate: 'بني سويف (Beni Suef)', childAnemiaPct: 24.2, priorityCommodity: 'دقيق مدعم بالحديد وحمض الفوليك (Iron-Fortified Flour)' },
-        { governorate: 'أسيوط (Asyut)', childAnemiaPct: 26.5, priorityCommodity: 'ألبان أطفال علاجية مدعمة (Fortified Milk Formula)' },
-        { governorate: 'القاهرة (Cairo)', childAnemiaPct: 14.1, priorityCommodity: 'مقررات تموينية قياسية (Standard Ration)' },
-        { governorate: 'الغربية (Gharbia)', childAnemiaPct: 12.8, priorityCommodity: 'مقررات تموينية قياسية (Standard Ration)' }
-      ]
-    };
-
-    // 4. Ministry of Labor / Manpower (MoL) — وزارة القوى العاملة والعمل
-    const totalWorkforce = totalDoctors + totalStaff + totalPharmacists + totalLabTechs;
-    const totalActiveWorkload = totalVisits + totalErCases + totalPrescriptions + totalLabSamples;
-    const mol = {
-      registeredHealthcareWorkforce: totalWorkforce,
-      workforceBreakdown: {
-        doctors: totalDoctors,
-        nursesAndErStaff: totalStaff,
-        pharmacists: totalPharmacists,
-        labTechnicians: totalLabTechs,
-      },
-      averageWeeklyOvertimeHours: Number((12 + Math.min(8, totalActiveWorkload * 0.15)).toFixed(1)),
-      burnoutFatigueAlerts: [
-        {
-          facility: 'مستشفى الدمرداش الجامعي (Al-Demerdash)',
-          department: 'الرعاية المركزة والتخدير (ICU & Anesthesia)',
-          staffOnShift: Math.max(4, totalStaff),
-          patientToNurseRatio: `${Math.max(1, occupiedBeds)}:${Math.max(1, totalStaff)}`,
-          fatigueScore: 84,
-          alertLevel: 'HIGH_RISK_FATIGUE',
-          actionAr: 'انتداب فوري لـ ١٢ ممرض رعاية حرجة و٤ أطباء مقيمين'
-        },
-        {
-          facility: 'مستشفى قصر العيني (Kasr Al Ainy)',
-          department: 'جراحات الطوارئ والحوادث (Emergency Surgery)',
-          staffOnShift: Math.max(6, totalDoctors),
-          patientToNurseRatio: '4:1',
-          fatigueScore: 78,
-          alertLevel: 'MODERATE_RISK',
-          actionAr: 'إعادة جدولة النوبتجيات المسائية وصرف بدل سهر مضاعف'
-        },
-        {
-          facility: 'مجمع الأقصر الطبي الدولي (Luxor International)',
-          department: 'العيادات الخارجية والأطفال (Pediatrics)',
-          staffOnShift: 14,
-          patientToNurseRatio: '2:1',
-          fatigueScore: 42,
-          alertLevel: 'NORMAL',
-          actionAr: 'القوة البشرية متزنة ومطابقة لمعايير الاعتماد'
-        }
-      ],
-      compulsoryAssignmentRatePct: 94.2,
-      pendingTakleefDoctors: 3400
     };
 
     return {
@@ -528,50 +394,6 @@ export class AnalyticsService {
       nationalPopulationBase: 120000000,
       activeSystemCoverage: totalPatients,
       mohp,
-      mohesr,
-      mosit,
-      mol
-    };
-  }
-
-  async checkFamilySubsidyEligibility(dto: FamilySubsidyCheckDto) {
-    const CAP = 5;
-    const currentSize = dto.currentFamilySize ?? dto.currentMembersCount ?? 5;
-    const headName = dto.headOfHouseholdName ?? dto.headNameAr ?? 'رب الأسرة';
-    const requested = dto.newAdditionsRequested ?? 1;
-    const newTotal = currentSize + requested;
-    const canAddCount = Math.max(0, CAP - currentSize);
-    const blockedCount = Math.max(0, requested - canAddCount);
-    const eligibleForNewAddition = canAddCount > 0;
-    const annualSavingsEgp = blockedCount * 3600;
-    const statusCode = eligibleForNewAddition
-      ? (blockedCount > 0 ? 'PARTIALLY_BLOCKED_AT_5' : 'APPROVED_UNDER_CAP')
-      : 'BLOCKED_CAP_REACHED_5_MEMBERS';
-
-    return {
-      headOfHouseholdName: headName,
-      headMti: dto.headMti || 'EG-2990-4821-77',
-      nationalId: dto.nationalId || dto.headMti || '—',
-      maxAllowedByLaw: CAP,
-      currentFamilySize: currentSize,
-      requestedAdditions: requested,
-      totalFamilySizeAfterBirth: newTotal,
-      approvedSubsidyAdditions: Math.min(requested, canAddCount),
-      blockedSubsidyAdditions: blockedCount,
-      rationCardAdditionAllowed: eligibleForNewAddition,
-      statusCode,
-      SyncTarget: 'MoHP ⇄ MoSIT National Ration Registry',
-      rationCardStatus: statusCode,
-      decisionAr: eligibleForNewAddition
-        ? (blockedCount > 0
-            ? `تمت الموافقة على إضافة (${Math.min(requested, canAddCount)}) فقط وحجب (${blockedCount}) لوصول البطاقة للحد الأقصى (٥ أفراد).`
-            : `الأسرة مكونة من (${currentSize}) أفراد (أقل من سقف الـ ٥ أفراد) — يُسمح بإضافة المولود (${dto.newMemberNameAr || 'الجديد'}) على بطاقة التموين وصرف المقررات التموينية وألبان الأطفال المدعمة.`)
-        : `مرفوض تلقائياً بقرار وزاري: الأسرة مكونة من (${currentSize}) أفراد وتخطت السقف التمويني (٥ أفراد). يتم تسجيل المولود (${dto.newMemberNameAr || 'الجديد'}) صحياً وتطعيمه بالكامل بوزارة الصحة مع إيقاف إضافته لبطاقة التموين آلياً (وفر سنوي: ${annualSavingsEgp.toLocaleString()} ج.م).`,
-      decisionEn: eligibleForNewAddition
-        ? `Approved up to 5-member cap (${Math.min(requested, canAddCount)} added, ${blockedCount} blocked).`
-        : `Automatically blocked from ration card addition: Family size (${currentSize}) has reached/exceeded the 5-member national subsidy cap.`,
-      estimatedAnnualStateSavingsEgp: annualSavingsEgp,
-      evaluatedAt: new Date().toISOString(),
     };
   }
 }
@@ -606,12 +428,6 @@ export class AnalyticsController {
   @Get('quad-ministries')
   @Roles(Role.EXECUTIVE, Role.ADMIN, Role.DOCTOR, Role.RECEPTIONIST)
   getQuadMinistries() { return this.svc.getQuadMinistries(); }
-
-  @Post('quad-ministries/family-check')
-  @Roles(Role.EXECUTIVE, Role.ADMIN, Role.RECEPTIONIST, Role.DOCTOR)
-  checkFamilySubsidy(@Body() dto: FamilySubsidyCheckDto) {
-    return this.svc.checkFamilySubsidyEligibility(dto);
-  }
 
   @Get('kpis')
   @Roles(Role.DOCTOR, Role.PHARMACIST, Role.LAB_TECH, Role.HOSPITAL_STAFF, Role.EXECUTIVE, Role.ADMIN, Role.RECEPTIONIST)

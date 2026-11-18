@@ -144,7 +144,7 @@ class MnisRepository {
   Future<ShareCode> createShare() async =>
       ShareCode.fromJson(await _api.post('/me/share-token', {}, _asMap));
 
-  // ── Sovereign Summary Hub (Referrals, Radiology, Chronic, Subsidy, Access Log)
+  // ── Sovereign Summary Hub (Referrals, Radiology, Chronic, Access Log)
   Future<Map<String, dynamic>> summaryHub() async =>
       _api.get('/me/summary-hub', _asMap);
 }
