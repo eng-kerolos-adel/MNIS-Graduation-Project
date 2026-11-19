@@ -204,16 +204,18 @@ export class ReferralsService {
         include: referralInclude,
       });
 
-      // If LAB referral, also create a LabSample linked to this referral so the lab intake queue receives it immediately
+      // If LAB referral, also create a LabSample linked to this referral so the target lab intake queue receives it immediately
       if (target === ReferralTarget.LAB) {
+        const sampleTypeEn = departmentEn ? `Venous Blood @ ${departmentEn}` : 'Venous Blood';
+        const sampleTypeAr = (departmentAr || departmentEn) ? `دم وريدي @ ${departmentAr || departmentEn}` : 'دم وريدي';
         await tx.labSample.create({
           data: {
             barcode: `EG${randomBytes(4).toString('hex').toUpperCase()}`,
             patientId: dto.patientId,
             panelEn: testPanel || 'Comprehensive Panel',
             panelAr: testPanel || 'تحليل شامل',
-            sampleTypeEn: 'Venous Blood',
-            sampleTypeAr: 'دم وريدي',
+            sampleTypeEn,
+            sampleTypeAr,
             orderedById: senderId,
             priority: dto.urgency === ReferralUrgency.CRITICAL ? 'STAT' : 'ROUTINE',
             status: 'AWAITING_COLLECTION',
@@ -249,12 +251,40 @@ export class ReferralsService {
       });
     });
 
+    const citizenUser = await this.prisma.user.findUnique({
+      where: { patientId: dto.patientId },
+      select: { id: true },
+    });
+    if (citizenUser) {
+      const tAr = target === ReferralTarget.HOSPITAL ? 'المستشفى' : target === ReferralTarget.LAB ? 'المعمل المركزي' : 'الصيدلية';
+      await this.prisma.pushNotification.create({
+        data: {
+          userId: citizenUser.id,
+          type: NotifType.REFERRAL_UPDATED,
+          titleEn: 'New Medical Referral Issued',
+          titleAr: 'تم إصدار تحويل طبي جديد في ملفك',
+          bodyEn: `You have been referred to ${target} (${reasonEn}).`,
+          bodyAr: `تم إصدار تحويل طبي لك إلى ${tAr} (${reasonAr}).`,
+          data: { referralId: res.id, target, urgency: dto.urgency },
+        },
+      }).catch(() => undefined);
+    }
+
     return this.mapReferral(res);
   }
 
   async list(role: Role, userId: string) {
-    if (role === Role.DOCTOR || role === Role.ADMIN || role === Role.EXECUTIVE) {
+    if (role === Role.ADMIN || role === Role.EXECUTIVE) {
       const rows = await this.prisma.referral.findMany({
+        include: referralInclude,
+        orderBy: { createdAt: 'desc' },
+      });
+      return rows.map((r) => this.mapReferral(r));
+    }
+
+    if (role === Role.DOCTOR) {
+      const rows = await this.prisma.referral.findMany({
+        where: { senderId: userId },
         include: referralInclude,
         orderBy: { createdAt: 'desc' },
       });
@@ -277,6 +307,32 @@ export class ReferralsService {
       include: referralInclude,
       orderBy: [{ urgency: 'desc' }, { createdAt: 'desc' }],
     });
+
+    if (role === Role.HOSPITAL_STAFF || role === Role.LAB_TECH) {
+      const actor = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { facilityEn: true, facilityAr: true },
+      });
+      if (actor?.facilityEn) {
+        const myFac = actor.facilityEn.trim().toLowerCase();
+        const myFacAr = (actor.facilityAr ?? '').trim();
+        return rows
+          .filter((r) => {
+            const deptEn = (r.departmentEn ?? '').trim().toLowerCase();
+            const deptAr = (r.departmentAr ?? '').trim();
+            if (!deptEn) return true;
+            const targetsSpecificFacility =
+              deptEn.includes('hospital') ||
+              deptEn.includes('lab') ||
+              deptEn.includes('center') ||
+              deptEn.includes(' — ');
+            if (!targetsSpecificFacility) return true;
+            return deptEn === myFac || deptEn.includes(myFac) || (!!myFacAr && deptAr.includes(myFacAr));
+          })
+          .map((r) => this.mapReferral(r));
+      }
+    }
+
     return rows.map((r) => this.mapReferral(r));
   }
 
@@ -308,7 +364,7 @@ export class ReferralsService {
     }
 
     const expectedRole = TARGET_ROLE_MAP[referral.target];
-    if (actorRole !== expectedRole && actorRole !== Role.ADMIN && actorRole !== Role.DOCTOR) {
+    if (actorRole !== expectedRole && actorRole !== Role.ADMIN) {
       throw new ForbiddenException(
         `Only ${expectedRole} can act on ${referral.target} referrals`,
       );
@@ -317,6 +373,25 @@ export class ReferralsService {
     const notifContent = this.buildNotifContent(dto.status, referral);
 
     return this.prisma.$transaction(async (tx) => {
+      let erCaseId: string | undefined;
+      if (referral.target === ReferralTarget.HOSPITAL && dto.status === ReferralStatus.ACCEPTED && !referral.erCaseId) {
+        const erCase = await tx.erCase.create({
+          data: {
+            patientId: referral.patientId,
+            arrivalEn: 'Hospital Referral',
+            arrivalAr: 'إحالة طبية للمستشفى',
+            complaintEn: referral.reasonEn,
+            complaintAr: referral.reasonAr,
+            acuity: referral.urgency === ReferralUrgency.CRITICAL ? 1 : 3,
+            status: 'TRIAGE',
+            areaEn: referral.departmentEn,
+            areaAr: referral.departmentAr,
+            referralId: referral.id,
+          },
+        });
+        erCaseId = erCase.id;
+      }
+
       const updated = await tx.referral.update({
         where: { id },
         data: {
@@ -325,6 +400,7 @@ export class ReferralsService {
           decidedAt: new Date(),
           responseNoteEn: dto.responseNoteEn ?? null,
           responseNoteAr: dto.responseNoteAr ?? null,
+          ...(erCaseId ? { erCaseId } : {}),
         },
         include: referralInclude,
       });
@@ -347,6 +423,25 @@ export class ReferralsService {
           },
         },
       });
+
+      const citizenUser = await tx.user.findUnique({
+        where: { patientId: referral.patientId },
+        select: { id: true },
+      });
+      if (citizenUser) {
+        const statusAr = dto.status === ReferralStatus.COMPLETED ? 'اكتمل تنفيذ' : dto.status === ReferralStatus.ACCEPTED ? 'تم قبول' : 'تحديث بخصوص';
+        await tx.pushNotification.create({
+          data: {
+            userId: citizenUser.id,
+            type: NotifType.REFERRAL_UPDATED,
+            titleEn: notifContent.titleEn,
+            titleAr: notifContent.titleAr,
+            bodyEn: `Your medical referral to ${referral.target} status changed to ${dto.status}.`,
+            bodyAr: `${statusAr} طلب التحويل الطبي الخاص بك (${referral.reasonAr}).`,
+            data: { referralId: referral.id, newStatus: dto.status, target: referral.target },
+          },
+        });
+      }
 
       return updated;
     });

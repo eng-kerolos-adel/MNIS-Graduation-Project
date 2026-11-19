@@ -58,6 +58,11 @@ class MnisRepository {
   Future<PatientProfile> profile() async =>
       PatientProfile.fromJson(await _api.get('/me/profile', _asMap));
 
+  Future<PatientProfile> updateOrganDonor(bool organDonor) async =>
+      PatientProfile.fromJson(
+        await _api.patch('/me/profile', {'organDonor': organDonor}, _asMap),
+      );
+
   Future<EmergencyCard> emergencyCard() async =>
       EmergencyCard.fromJson(await _api.get('/me/card', _asMap));
 
@@ -84,6 +89,8 @@ class MnisRepository {
     required DateTime preferredDate,
     required String reason,
     String? doctorId,
+    String? labId,
+    String? preferredTime,
     AppointmentType type = AppointmentType.clinic,
     String? testPanel,
   }) async =>
@@ -91,13 +98,28 @@ class MnisRepository {
         '/me/appointments',
         {
           'preferredDate': preferredDate.toIso8601String(),
+          if (preferredTime != null) 'preferredTime': preferredTime,
           'reason': reason,
           if (doctorId != null) 'doctorId': doctorId,
+          if (labId != null) 'labId': labId,
           'type': type == AppointmentType.lab ? 'LAB' : 'CLINIC',
           if (testPanel != null) 'testPanel': testPanel,
         },
         _asMap,
       ));
+
+  Future<List<LabFacilityOption>> labs() async =>
+      (await _api.get('/schedule/labs', _asList))
+          .map(LabFacilityOption.fromJson)
+          .toList();
+
+  Future<List<String>> doctorSlots(String doctorId, String dateYmd) async {
+    final rows = await _api.get('/schedule/doctors/$doctorId/slots?date=$dateYmd', _asList);
+    return rows
+        .map((e) => (e['slotStart'] as String?) ?? '')
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
 
   // ── Citizen-uploaded documents ──────────────────────────────────────────
   Future<List<DocumentModel>> documents() async =>

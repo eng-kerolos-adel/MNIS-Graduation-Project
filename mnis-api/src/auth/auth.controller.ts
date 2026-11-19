@@ -31,31 +31,39 @@ export class AuthController {
     });
   }
 
-  @Public() @Throttle({ default: { limit: 5, ttl: 60_000 } }) @HttpCode(200) @Post('login')
+  @Public() @Throttle({ default: { limit: 60, ttl: 60_000 } }) @HttpCode(200) @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const r = await this.auth.login(dto.identifier, dto.password, this.meta(req));
-    if (this.isWeb(req)) { this.setCookie(res, r.refreshToken); const { refreshToken, ...rest } = r; return rest; }
+    // Set httpOnly cookie for legacy single-tab fallback, AND return refreshToken in body
+    // so each browser tab can maintain its own isolated concurrent session in sessionStorage.
+    if (this.isWeb(req)) { this.setCookie(res, r.refreshToken); }
     return r;
   }
 
-  @Public() @Throttle({ default: { limit: 20, ttl: 60_000 } }) @HttpCode(200) @Post('refresh')
+  @Public() @Throttle({ default: { limit: 180, ttl: 60_000 } }) @HttpCode(200) @Post('refresh')
   async refresh(@Body() dto: RefreshDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const web = this.isWeb(req);
-    const raw = web ? req.cookies?.[COOKIE] : dto.refreshToken;
+    const raw = dto.refreshToken || req.cookies?.[COOKIE];
     const r = await this.auth.refresh(raw, this.meta(req));
-    if (web) { this.setCookie(res, r.refreshToken); const { refreshToken, ...rest } = r; return rest; }
+    if (web && !dto.refreshToken) { this.setCookie(res, r.refreshToken); }
     return r;
   }
 
   @Public() @HttpCode(204) @Post('logout')
   async logout(@Body() dto: RefreshDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const web = this.isWeb(req);
-    await this.auth.logout(web ? req.cookies?.[COOKIE] : dto.refreshToken);
-    if (web) res.clearCookie(COOKIE, { path: '/v1/auth' });
+    await this.auth.logout(dto.refreshToken || req.cookies?.[COOKIE]);
+    if (web && !dto.refreshToken) res.clearCookie(COOKIE, { path: '/v1/auth' });
   }
 
   @AllowPasswordChange() @Get('me')
   me(@CurrentUser() user: AuthUser) { return this.auth.me(user.id); }
+
+  @Get('sessions')
+  listSessions(@CurrentUser() user: AuthUser) { return this.auth.listSessions(user.id); }
+
+  @HttpCode(200) @Post('sessions/revoke-all')
+  revokeAllSessions(@CurrentUser() user: AuthUser) { return this.auth.revokeAllSessions(user.id); }
 
   @AllowPasswordChange() @Throttle({ default: { limit: 5, ttl: 60_000 } }) @HttpCode(200) @Post('change-password')
   changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {

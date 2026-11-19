@@ -13,9 +13,21 @@ import { Audit, Roles } from '../common/decorators';
 // --- Service ---
 @Injectable()
 export class AnalyticsService {
+  private overviewCache?: { expires: number; data: Awaited<ReturnType<AnalyticsService['computeOverview']>> };
+  private kpisCache?: { expires: number; data: Awaited<ReturnType<AnalyticsService['computeKpis']>> };
+
   constructor(private prisma: PrismaService) {}
 
   async getOverview() {
+    if (this.overviewCache && this.overviewCache.expires > Date.now()) {
+      return this.overviewCache.data;
+    }
+    const data = await this.computeOverview();
+    this.overviewCache = { expires: Date.now() + 10_000, data };
+    return data;
+  }
+
+  private async computeOverview() {
     const [totalPatients, totalDoctors, totalPrescriptions, totalLabSamples] = await Promise.all([
       this.prisma.patient.count(),
       this.prisma.user.count({ where: { role: 'DOCTOR', isActive: true } }),
@@ -234,6 +246,15 @@ export class AnalyticsService {
   }
 
   async getKpis() {
+    if (this.kpisCache && this.kpisCache.expires > Date.now()) {
+      return this.kpisCache.data;
+    }
+    const data = await this.computeKpis();
+    this.kpisCache = { expires: Date.now() + 10_000, data };
+    return data;
+  }
+
+  private async computeKpis() {
     const [
       totalBeds,
       occupiedBeds,

@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Patch,
   Post,
   Delete,
   Param,
@@ -13,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role, AppointmentType, NfcCardStatus } from '@prisma/client';
-import { IsEnum, IsString, IsUUID, IsOptional, IsInt, Min, Max, IsDateString } from 'class-validator';
+import { IsBoolean, IsEnum, IsString, IsUUID, IsOptional, IsInt, Min, Max, IsDateString } from 'class-validator';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
@@ -26,11 +27,19 @@ export class CreateAppointmentDto {
   @IsUUID()
   doctorId?: string;
 
+  @IsOptional()
+  @IsUUID()
+  labId?: string;
+
   @IsEnum(AppointmentType)
   type: AppointmentType;
 
   @IsDateString()
   preferredDate: string;
+
+  @IsOptional()
+  @IsString()
+  preferredTime?: string;
 
   @IsString()
   reason: string;
@@ -59,6 +68,12 @@ export class UploadDocumentDto {
 
   @IsString()
   fileBase64: string;
+}
+
+export class UpdateMyProfileDto {
+  @IsOptional()
+  @IsBoolean()
+  organDonor?: boolean;
 }
 
 // --- Service ---
@@ -106,64 +121,106 @@ export class MeService {
     };
   }
 
+  private async getUsersMap(ids: Array<string | null | undefined>) {
+    const unique = Array.from(new Set(ids.filter((x): x is string => !!x)));
+    if (unique.length === 0) return new Map<string, any>();
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: unique } },
+      select: {
+        id: true, fullNameEn: true, fullNameAr: true,
+        specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true,
+        licenseNo: true, role: true,
+      },
+    });
+    return new Map(users.map((u) => [u.id, u]));
+  }
+
   async getPrescriptions(userId: string) {
     const patientId = await this.getPatientId(userId);
-    return this.prisma.prescription.findMany({
+    const rows = await this.prisma.prescription.findMany({
       where: { patientId },
       include: { items: true },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     });
+    const map = await this.getUsersMap(rows.map((r) => r.physicianId));
+    return rows.map((r) => ({ ...r, physician: map.get(r.physicianId) ?? null }));
   }
 
   async getLabResults(userId: string) {
     const patientId = await this.getPatientId(userId);
-    return this.prisma.labSample.findMany({
-      where: { patientId, status: { in: ['RESULTS_ENTERED', 'VERIFIED'] } },
+    const rows = await this.prisma.labSample.findMany({
+      where: { patientId },
       include: { results: true },
-      orderBy: { collectedAt: 'desc' }
+      orderBy: { collectedAt: 'desc' },
     });
+    const map = await this.getUsersMap(rows.flatMap((s) => [s.orderedById, s.verifiedById]));
+    return rows.map((s) => ({
+      ...s,
+      orderedBy: map.get(s.orderedById) ?? null,
+      verifiedBy: s.verifiedById ? (map.get(s.verifiedById) ?? null) : null,
+    }));
   }
 
   async getVisits(userId: string) {
     const patientId = await this.getPatientId(userId);
-    return this.prisma.visit.findMany({
+    const rows = await this.prisma.visit.findMany({
       where: { patientId },
       orderBy: { arrivedAt: 'desc' },
-      take: 50
+      take: 50,
     });
+    const map = await this.getUsersMap(rows.map((v) => v.doctorId));
+    return rows.map((v) => ({ ...v, doctor: v.doctorId ? (map.get(v.doctorId) ?? null) : null }));
   }
 
   async getAppointments(userId: string) {
     const patientId = await this.getPatientId(userId);
-    return this.prisma.appointment.findMany({
+    const rows = await this.prisma.appointment.findMany({
       where: { patientId },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     });
+    const map = await this.getUsersMap(rows.map((a) => a.doctorId));
+    return rows.map((a) => ({ ...a, doctor: a.doctorId ? (map.get(a.doctorId) ?? null) : null }));
   }
 
   async requestAppointment(userId: string, dto: CreateAppointmentDto) {
     const patientId = await this.getPatientId(userId);
     const pDate = new Date(dto.preferredDate);
+    if (dto.preferredTime && /^\d{2}:\d{2}$/.test(dto.preferredTime.trim())) {
+      const [hh, mm] = dto.preferredTime.trim().split(':').map(Number);
+      pDate.setHours(hh, mm, 0, 0);
+    }
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     if (pDate < startOfToday) throw new BadRequestException('Preferred date must be today or in the future');
 
-    if (dto.type === 'CLINIC' && dto.doctorId) {
-      const doctor = await this.prisma.user.findUnique({ where: { id: dto.doctorId, role: 'DOCTOR', isActive: true } });
+    let providerId: string | undefined;
+    if (dto.type === 'CLINIC') {
+      if (!dto.doctorId) throw new BadRequestException('Please select a clinic / physician');
+      const doctor = await this.prisma.user.findFirst({ where: { id: dto.doctorId, role: 'DOCTOR', isActive: true } });
       if (!doctor) throw new NotFoundException('Doctor not found or inactive');
+      providerId = doctor.id;
+    } else {
+      const targetLabId = dto.labId || dto.doctorId;
+      if (!targetLabId) throw new BadRequestException('Please select a laboratory');
+      if (!dto.testPanel?.trim()) throw new BadRequestException('Please specify the required lab test panel');
+      const lab = await this.prisma.user.findFirst({ where: { id: targetLabId, role: 'LAB_TECH', isActive: true } });
+      if (!lab) throw new NotFoundException('Laboratory not found or inactive');
+      providerId = lab.id;
     }
 
-    return this.prisma.appointment.create({
+    const created = await this.prisma.appointment.create({
       data: {
         patientId,
-        doctorId: dto.doctorId,
+        doctorId: providerId,
         type: dto.type,
         preferredDate: pDate,
         reason: dto.reason,
-        testPanel: dto.testPanel,
-        status: 'REQUESTED'
-      }
+        testPanel: dto.testPanel?.trim() || null,
+        status: 'REQUESTED',
+      },
     });
+    const map = await this.getUsersMap([created.doctorId]);
+    return { ...created, doctor: created.doctorId ? (map.get(created.doctorId) ?? null) : null };
   }
 
   async cancelAppointment(userId: string, appointmentId: string) {
@@ -304,10 +361,20 @@ export class MeService {
     };
   }
 
+  async updateProfile(userId: string, dto: UpdateMyProfileDto) {
+    const patientId = await this.getPatientId(userId);
+    if (typeof dto.organDonor === 'boolean') {
+      await this.prisma.patient.update({
+        where: { id: patientId },
+        data: { organDonor: dto.organDonor },
+      });
+    }
+    return this.getProfile(userId);
+  }
+
   async getSummaryHub(userId: string) {
     const patientId = await this.getPatientId(userId);
-    const [patient, referrals, radiology, chronicAllowances, recentAudits] = await Promise.all([
-      this.prisma.patient.findUnique({ where: { id: patientId } }),
+    const [referrals, radiology, chronicAllowances, recentAudits, activeVisit, activeBed, orCases] = await Promise.all([
       this.prisma.referral.findMany({
         where: { patientId },
         include: {
@@ -328,15 +395,92 @@ export class MeService {
       }),
       this.prisma.auditLog.findMany({
         where: {
-          resourceType: { in: ['PATIENT', 'PRESCRIPTION', 'LAB_SAMPLE', 'REFERRAL', 'NFC_CARD'] },
+          resourceType: { in: ['PATIENT', 'PRESCRIPTION', 'LAB_SAMPLE', 'REFERRAL', 'NFC_CARD', 'BREAK_GLASS_NFC'] },
           statusCode: { lt: 400 },
         },
+        include: {
+          user: { select: { fullNameEn: true, fullNameAr: true, role: true, facilityEn: true, facilityAr: true } },
+        },
         orderBy: { at: 'desc' },
-        take: 8,
+        take: 10,
+      }),
+      this.prisma.visit.findFirst({
+        where: {
+          patientId,
+          status: { in: ['WAITING', 'IN_CONSULTATION'] },
+        },
+        orderBy: { arrivedAt: 'desc' },
+      }),
+      this.prisma.bed.findFirst({
+        where: { patientId, status: 'OCCUPIED' },
+      }),
+      this.prisma.orCase.findMany({
+        where: { patientId },
+        orderBy: { scheduledStart: 'desc' },
+        take: 5,
       }),
     ]);
 
+    const surgeonMap = await this.getUsersMap(orCases.map((c) => c.surgeonId));
+
+    let activeQueueTicket: Record<string, unknown> | null = null;
+    if (activeVisit) {
+      const aheadCount =
+        activeVisit.status === 'WAITING'
+          ? await this.prisma.visit.count({
+              where: {
+                status: 'WAITING',
+                arrivedAt: { lt: activeVisit.arrivedAt },
+              },
+            })
+          : 0;
+      const docMap = await this.getUsersMap([activeVisit.doctorId]);
+      const doc = activeVisit.doctorId ? docMap.get(activeVisit.doctorId) : null;
+      activeQueueTicket = {
+        id: activeVisit.id,
+        ticketNo: activeVisit.ticketNo,
+        status: activeVisit.status,
+        isEmergency: activeVisit.isEmergency,
+        reasonEn: activeVisit.reasonEn,
+        reasonAr: activeVisit.reasonAr,
+        arrivedAt: activeVisit.arrivedAt,
+        calledAt: activeVisit.calledAt,
+        aheadCount,
+        doctorNameEn: doc?.fullNameEn ?? 'Outpatient Clinic Physician',
+        doctorNameAr: doc?.fullNameAr ?? 'طبيب العيادة الخارجية المناوب',
+        specialityEn: doc?.specialityEn ?? 'General Medicine',
+        specialityAr: doc?.specialityAr ?? 'الطب العام والطوارئ',
+        facilityEn: doc?.facilityEn ?? 'Cairo University Teaching Hospital',
+        facilityAr: doc?.facilityAr ?? 'مستشفى قصر العيني التعليمي',
+      };
+    }
+
     return {
+      activeQueueTicket,
+      activeInpatientBed: activeBed
+        ? {
+            id: activeBed.id,
+            bedNumber: activeBed.bedNumber,
+            wardEn: activeBed.wardEn,
+            wardAr: activeBed.wardAr,
+            admittedAt: activeBed.admittedAt,
+          }
+        : null,
+      surgeries: orCases.map((c) => {
+        const surgeon = surgeonMap.get(c.surgeonId);
+        return {
+          id: c.id,
+          procedureEn: c.procedureEn,
+          procedureAr: c.procedureAr,
+          theaterNo: c.theaterNo ?? 'OR-01',
+          status: c.status,
+          scheduledStart: c.scheduledStart,
+          anaesthesiaEn: c.anaesthesiaEn ?? 'General Anaesthesia',
+          anaesthesiaAr: c.anaesthesiaAr ?? 'تخدير كلي',
+          surgeonNameEn: surgeon?.fullNameEn ?? 'Consultant Surgeon',
+          surgeonNameAr: surgeon?.fullNameAr ?? 'استشاري الجراحة العامة',
+        };
+      }),
       referrals: referrals.map((r) => ({
         ...r,
         targetFacility: r.departmentAr || r.departmentEn || r.testPanel || r.medicationAr || r.target,
@@ -369,10 +513,18 @@ export class MeService {
       })),
       accessLogs: recentAudits.map((a) => ({
         id: a.id,
-        role: a.role ?? 'DOCTOR',
-        actorRole: a.role ?? 'DOCTOR',
-        actorNameAr: a.role === 'DOCTOR' ? 'طبيب معالج معتمد' : a.role === 'PHARMACIST' ? 'صيدلي معتمد' : 'منظومة الرقابة السيادية',
-        actorNameEn: a.role === 'DOCTOR' ? 'Attending Physician' : a.role === 'PHARMACIST' ? 'Licensed Pharmacist' : 'Sovereign Audit Engine',
+        role: a.role ?? a.user?.role ?? 'DOCTOR',
+        actorRole: a.role ?? a.user?.role ?? 'DOCTOR',
+        actorNameAr: a.user?.fullNameAr
+          ? `${a.user.fullNameAr}${a.user.facilityAr ? ' — ' + a.user.facilityAr : ''}`
+          : a.resourceType === 'BREAK_GLASS_NFC'
+            ? 'بروتوكول طوارئ سريع (Break-Glass NFC)'
+            : 'النظام المركزي الموحد — وزارة الصحة',
+        actorNameEn: a.user?.fullNameEn
+          ? `${a.user.fullNameEn}${a.user.facilityEn ? ' — ' + a.user.facilityEn : ''}`
+          : a.resourceType === 'BREAK_GLASS_NFC'
+            ? 'Emergency Break-Glass NFC Protocol'
+            : 'Unified Central System — MoHP',
         action: `${a.method} ${a.resourceType ?? 'RECORD'}`,
         resourceType: a.resourceType ?? 'PATIENT',
         method: a.method,
@@ -394,6 +546,11 @@ export class MeController {
 
   @Get('profile')
   getProfile(@CurrentUser() user: AuthUser) { return this.svc.getProfile(user.id); }
+
+  @Patch('profile')
+  updateProfile(@Body() dto: UpdateMyProfileDto, @CurrentUser() user: AuthUser) {
+    return this.svc.updateProfile(user.id, dto);
+  }
 
   @Get('prescriptions')
   getPrescriptions(@CurrentUser() user: AuthUser) { return this.svc.getPrescriptions(user.id); }

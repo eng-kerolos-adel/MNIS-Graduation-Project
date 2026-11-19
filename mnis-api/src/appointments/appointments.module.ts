@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { NotifType, Role } from '@prisma/client';
 import { IsDateString, IsOptional, IsString, IsUUID, Length, MaxLength } from 'class-validator';
+import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
@@ -27,62 +28,189 @@ export class AppointmentsService {
     private notifs: NotificationsService,
   ) {}
 
-  // ---- appointments (reception confirms; doctors see their own) ----
-  listAppointments(u: AuthUser) {
-    return this.prisma.appointment.findMany({
-      where: u.role === Role.DOCTOR ? { doctorId: u.id } : {},
-      include: patientInc, orderBy: [{ status: 'asc' }, { preferredDate: 'asc' }], take: 200,
+  private async resolveStaffScope(u: AuthUser) {
+    const staff = await this.prisma.user.findUnique({
+      where: { id: u.id },
+      select: { id: true, email: true, role: true, specialityEn: true, licenseNo: true, facilityEn: true, facilityAr: true },
     });
+    if (!staff) return { kind: 'GLOBAL' as const, doctorId: null as string | null, labUserIds: [] as string[], facilityEn: null as string | null };
+
+    if (staff.role === Role.RECEPTIONIST && (staff.specialityEn === 'CLINIC_ASSISTANT' || staff.licenseNo?.startsWith('AST:'))) {
+      const docEmail = staff.licenseNo?.startsWith('AST:') ? staff.licenseNo.slice(4).trim().toLowerCase() : null;
+      const doc = await this.prisma.user.findFirst({
+        where: {
+          role: Role.DOCTOR,
+          isActive: true,
+          ...(docEmail ? { email: docEmail } : staff.facilityEn ? { facilityEn: staff.facilityEn } : {}),
+        },
+        select: { id: true },
+      });
+      return { kind: 'CLINIC_ASSISTANT' as const, doctorId: doc?.id ?? null, labUserIds: [] as string[], facilityEn: staff.facilityEn };
+    }
+
+    if (staff.role === Role.DOCTOR) {
+      return { kind: 'DOCTOR' as const, doctorId: staff.id, labUserIds: [] as string[], facilityEn: staff.facilityEn };
+    }
+
+    if (staff.role === Role.LAB_TECH) {
+      const labPeers = await this.prisma.user.findMany({
+        where: { role: Role.LAB_TECH, isActive: true, ...(staff.facilityEn ? { facilityEn: staff.facilityEn } : { id: staff.id }) },
+        select: { id: true },
+      });
+      return { kind: 'LAB' as const, doctorId: null as string | null, labUserIds: labPeers.map((l) => l.id), facilityEn: staff.facilityEn };
+    }
+
+    return { kind: 'GLOBAL' as const, doctorId: null as string | null, labUserIds: [] as string[], facilityEn: staff.facilityEn };
+  }
+
+  // ---- appointments (Clinic Assistant handles only their Doctor's CLINIC; Lab Reception handles only their Lab's LAB) ----
+  async listAppointments(u: AuthUser) {
+    const scope = await this.resolveStaffScope(u);
+    const where =
+      scope.kind === 'LAB'
+        ? { type: 'LAB' as const, ...(scope.labUserIds.length ? { doctorId: { in: scope.labUserIds } } : {}) }
+        : scope.kind === 'DOCTOR'
+          ? { type: 'CLINIC' as const, doctorId: u.id }
+          : scope.kind === 'CLINIC_ASSISTANT'
+            ? { type: 'CLINIC' as const, ...(scope.doctorId ? { doctorId: scope.doctorId } : {}) }
+            : {};
+
+    const rows = await this.prisma.appointment.findMany({
+      where,
+      include: patientInc,
+      orderBy: [{ status: 'asc' }, { preferredDate: 'asc' }],
+      take: 200,
+    });
+    const docIds = Array.from(new Set(rows.map((r) => r.doctorId).filter((x): x is string => !!x)));
+    const docs = docIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: docIds } },
+          select: { id: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true },
+        })
+      : [];
+    const docMap = new Map(docs.map((d) => [d.id, d]));
+    return rows.map((r) => ({ ...r, doctor: r.doctorId ? (docMap.get(r.doctorId) ?? null) : null }));
   }
 
   async confirm(id: string, dto: ConfirmDto, u: AuthUser) {
-    let doctorNameEn = 'Assigned Physician';
-    let doctorNameAr = 'الطبيب المختص';
-    if (dto.doctorId) {
-      const d = await this.prisma.user.findFirst({ where: { id: dto.doctorId, role: Role.DOCTOR, isActive: true } });
-      if (!d) throw new BadRequestException('DOCTOR_NOT_FOUND');
-      doctorNameEn = d.fullNameEn;
-      doctorNameAr = d.fullNameAr;
+    const existing = await this.prisma.appointment.findUnique({ where: { id }, include: patientInc });
+    if (!existing || existing.status !== 'REQUESTED') {
+      throw new BadRequestException('INVALID_STATE_TRANSITION');
     }
+
+    const targetProviderId = dto.doctorId || existing.doctorId || u.id;
+    const provider = await this.prisma.user.findUnique({
+      where: { id: targetProviderId },
+      select: { id: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true },
+    });
+    if (!provider) throw new BadRequestException('DOCTOR_NOT_FOUND');
 
     const r = await this.prisma.appointment.updateMany({
       where: { id, status: 'REQUESTED' },
-      data: { status: 'CONFIRMED', scheduledAt: new Date(dto.scheduledAt), doctorId: dto.doctorId, note: dto.note, decidedById: u.id, decidedAt: new Date() },
+      data: { status: 'CONFIRMED', scheduledAt: new Date(dto.scheduledAt), doctorId: targetProviderId, note: dto.note, decidedById: u.id, decidedAt: new Date() },
     });
     if (r.count === 0) throw new BadRequestException('INVALID_STATE_TRANSITION');
-    
-    // Auto queue patient into Doctor's live waiting queue
+
     const appt = await this.prisma.appointment.findUnique({ where: { id }, include: patientInc });
     if (appt) {
-      const count = await this.prisma.visit.count({ where: { arrivedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } } });
-      const ticketNo = `A-${count + 1}`;
-      await this.prisma.visit.create({
-        data: {
-          patientId: appt.patientId,
-          doctorId: appt.doctorId,
-          reasonEn: appt.reason,
-          reasonAr: appt.reason,
-          ticketNo,
-          status: 'WAITING'
-        }
-      });
-
-      // Notify Citizen on Mobile App
       const citizenUser = await this.prisma.user.findUnique({ where: { patientId: appt.patientId } });
-      if (citizenUser) {
-        await this.notifs.sendToUser(
-          citizenUser.id,
-          NotifType.APPOINTMENT_CONFIRMED,
-          'Appointment Confirmed & Queued',
-          'تم تأكيد موعدك وإدراجك بطابور الطبيب',
-          `Your appointment with ${doctorNameEn} is confirmed. Queue Ticket: ${ticketNo}`,
-          `تم تأكيد موعدك مع ${doctorNameAr}. رقم تذكرة الطابور: ${ticketNo}`,
-          { appointmentId: appt.id, ticketNo, scheduledAt: dto.scheduledAt }
-        );
+      if (appt.type === 'CLINIC') {
+        if (citizenUser) {
+          await this.notifs.sendToUser(
+            citizenUser.id,
+            NotifType.APPOINTMENT_CONFIRMED,
+            'Clinic Appointment Confirmed',
+            'تم تأكيد موعد العيادة — بانتظار حضورك',
+            `Your appointment with ${provider.fullNameEn} (${provider.facilityEn ?? 'Clinic'}) is confirmed. Please check in with the clinic assistant upon arrival.`,
+            `تم تأكيد حجز موعدك مع ${provider.fullNameAr} (${provider.facilityAr ?? 'العيادة'}). يرجى الحضور وتسجيل الدخول لدى مساعد الطبيب عند الوصول.`,
+            { appointmentId: appt.id, scheduledAt: dto.scheduledAt },
+          );
+        }
+      } else {
+        const panel = appt.testPanel || appt.reason;
+        const sample = await this.prisma.labSample.create({
+          data: {
+            barcode: `EG${randomBytes(4).toString('hex').toUpperCase()}`,
+            patientId: appt.patientId,
+            panelEn: panel,
+            panelAr: panel,
+            sampleTypeEn: 'Venous Blood / Lab Specimen',
+            sampleTypeAr: 'عينة معملية',
+            orderedById: targetProviderId,
+            priority: 'ROUTINE',
+            status: 'AWAITING_COLLECTION',
+          },
+        });
+        if (citizenUser) {
+          await this.notifs.sendToUser(
+            citizenUser.id,
+            NotifType.APPOINTMENT_CONFIRMED,
+            'Lab Appointment Confirmed & Barcode Issued',
+            'تم تأكيد حجز المعمل وإصدار باركود العينة',
+            `Your lab booking at ${provider.facilityEn ?? provider.fullNameEn} for (${panel}) is confirmed. Barcode: ${sample.barcode}`,
+            `تم تأكيد حجزك في (${provider.facilityAr ?? provider.fullNameAr}) لإجراء (${panel}). باركود العينة: ${sample.barcode}`,
+            { appointmentId: appt.id, sampleId: sample.id, barcode: sample.barcode, scheduledAt: dto.scheduledAt },
+          );
+        }
       }
     }
-    
-    return appt;
+
+    return { ...appt, doctor: provider };
+  }
+
+  async checkIn(id: string, u: AuthUser) {
+    const appt = await this.prisma.appointment.findUnique({ where: { id }, include: patientInc });
+    if (!appt || appt.type !== 'CLINIC' || appt.status !== 'CONFIRMED') {
+      throw new BadRequestException('APPOINTMENT_NOT_CONFIRMED_FOR_CHECKIN');
+    }
+
+    const scope = await this.resolveStaffScope(u);
+    const doctorId = appt.doctorId || scope.doctorId;
+
+    const existingVisit = await this.prisma.visit.findFirst({
+      where: {
+        patientId: appt.patientId,
+        ...(doctorId ? { doctorId } : {}),
+        status: { in: ['WAITING', 'IN_CONSULTATION'] },
+      },
+      orderBy: { arrivedAt: 'desc' },
+    });
+    if (existingVisit) {
+      return { appointment: appt, visit: existingVisit };
+    }
+
+    const count = await this.prisma.visit.count({
+      where: { arrivedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } },
+    });
+    const ticketNo = `A-${count + 1}`;
+    const visit = await this.prisma.visit.create({
+      data: {
+        patientId: appt.patientId,
+        doctorId: doctorId ?? null,
+        reasonEn: appt.reason,
+        reasonAr: appt.reason,
+        ticketNo,
+        status: 'WAITING',
+      },
+    });
+
+    const citizenUser = await this.prisma.user.findUnique({
+      where: { patientId: appt.patientId },
+      select: { id: true },
+    });
+    if (citizenUser) {
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.APPOINTMENT_CONFIRMED,
+        'Checked In — Clinic Queue Ticket Issued',
+        'تم تسجيل حضورك بالعيادة وإدراجك في طابور الدخول',
+        `You are checked in and added to the clinic queue. Your ticket number is ${ticketNo}.`,
+        `تم تسجيل حضورك في العيادة وإدراجك بطابور الانتظار بنجاح. رقم التذكرة: ${ticketNo}`,
+        { appointmentId: appt.id, visitId: visit.id, ticketNo },
+      );
+    }
+
+    return { appointment: appt, visit };
   }
 
   async rejectAppointment(id: string, dto: DecideDto, u: AuthUser) {
@@ -109,40 +237,93 @@ export class AppointmentsService {
   doctors() {
     return this.prisma.user.findMany({
       where: { role: Role.DOCTOR, isActive: true },
-      select: { id: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true }
+      select: { id: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true, licenseNo: true },
+      orderBy: { fullNameEn: 'asc' },
     });
   }
 
   // ---- prescription renewals (doctor decides) ----
-  listRenewals() {
-    return this.prisma.renewalRequest.findMany({ where: { status: 'PENDING' }, include: patientInc, orderBy: { createdAt: 'asc' }, take: 200 });
+  listRenewals(u: AuthUser) {
+    return this.prisma.renewalRequest.findMany({
+      where: {
+        status: 'PENDING',
+        ...(u.role === Role.DOCTOR ? { prescription: { physicianId: u.id } } : {}),
+      },
+      include: {
+        patient: { select: PATIENT_PUBLIC_SELECT },
+        prescription: { include: { items: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+    });
   }
 
-  /** Approval clones the old prescription as a fresh DRAFT owned by the approving doctor; they still review and sign it. */
+  /** Approval clones the old prescription, computes its canonical HMAC-SHA256 seal, signs it directly into the Pharmacy queue, and notifies the citizen. */
   async approveRenewal(id: string, u: AuthUser) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.renewalRequest.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'APPROVED', decidedById: u.id, decidedAt: new Date() } });
       if (claimed.count === 0) throw new BadRequestException('INVALID_STATE_TRANSITION');
       const req = await tx.renewalRequest.findUniqueOrThrow({ where: { id } });
       const old = await tx.prescription.findUnique({ where: { id: req.prescriptionId }, include: { items: true } });
       if (!old) throw new NotFoundException('ORIGINAL_PRESCRIPTION_NOT_FOUND');
-      const draft = await tx.prescription.create({
+      const created = await tx.prescription.create({
         data: {
           code: `RX-${this.crypto.sha256(id + Date.now()).slice(0, 10).toUpperCase()}`,
           patientId: old.patientId, physicianId: u.id, diagnosisEn: old.diagnosisEn, diagnosisAr: old.diagnosisAr, icd10: old.icd10,
           isChronic: old.isChronic,
           items: { create: old.items.map(({ id: _i, prescriptionId: _p, ...item }) => item) },
         },
+        include: { items: true },
       });
-      await tx.renewalRequest.update({ where: { id }, data: { newPrescriptionId: draft.id } });
-      return { renewalId: id, draftPrescriptionId: draft.id };
+      const canonical = JSON.stringify({
+        id: created.id,
+        patientId: created.patientId,
+        physicianId: created.physicianId,
+        dx: created.diagnosisEn,
+        items: created.items.map((i) => [i.nameEn, i.dose, i.quantity, i.durationDays]),
+      });
+      const signed = await tx.prescription.update({
+        where: { id: created.id },
+        data: { status: 'SIGNED', signedAt: new Date(), signatureHash: this.crypto.hmacSign(canonical) },
+      });
+      await tx.renewalRequest.update({ where: { id }, data: { newPrescriptionId: signed.id } });
+      return { renewalId: id, draftPrescriptionId: signed.id, code: signed.code, patientId: old.patientId };
     });
+
+    const citizenUser = await this.prisma.user.findUnique({ where: { patientId: result.patientId }, select: { id: true } });
+    if (citizenUser) {
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.RENEWAL_DECIDED,
+        'Prescription Renewal Approved',
+        'تمت الموافقة على تجديد الروشتة وإرسالها للصيدلية',
+        `Your prescription renewal (#${result.code}) has been approved, digitally signed, and sent to the pharmacy.`,
+        `تم اعتماد وتوقيع تجديد روشتتك رقم (#${result.code}) وإرسالها للصيدلية للصرف.`,
+        { renewalId: id, prescriptionId: result.draftPrescriptionId, code: result.code },
+      );
+    }
+    return { renewalId: result.renewalId, draftPrescriptionId: result.draftPrescriptionId, code: result.code };
   }
 
   async rejectRenewal(id: string, dto: DecideDto, u: AuthUser) {
     const r = await this.prisma.renewalRequest.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'REJECTED', note: dto.note, decidedById: u.id, decidedAt: new Date() } });
     if (r.count === 0) throw new BadRequestException('INVALID_STATE_TRANSITION');
-    return this.prisma.renewalRequest.findUnique({ where: { id } });
+    const updated = await this.prisma.renewalRequest.findUnique({ where: { id } });
+    if (updated) {
+      const citizenUser = await this.prisma.user.findUnique({ where: { patientId: updated.patientId }, select: { id: true } });
+      if (citizenUser) {
+        await this.notifs.sendToUser(
+          citizenUser.id,
+          NotifType.RENEWAL_DECIDED,
+          'Prescription Renewal Rejected',
+          'تحديث بخصوص طلب تجديد الروشتة',
+          dto.note || 'Your prescription renewal request could not be approved. Please book a clinic follow-up.',
+          dto.note || 'تعذر تجديد الروشتة تلقائياً، يرجى حجز موعد متابعة بالعيادة لمراجعة الحالة.',
+          { renewalId: id },
+        );
+      }
+    }
+    return updated;
   }
 
   // ---- QR share redemption (doctor) ----
@@ -151,12 +332,25 @@ export class AppointmentsService {
     const claimed = await this.prisma.shareToken.updateMany({ where: { tokenHash, usedAt: null, expiresAt: { gt: new Date() } }, data: { usedAt: new Date(), usedById: u.id } });
     if (claimed.count === 0) throw new NotFoundException('INVALID_OR_EXPIRED_CODE');
     const token = await this.prisma.shareToken.findUniqueOrThrow({ where: { tokenHash } });
-    const [patient, prescriptions, labs, visits] = await Promise.all([
+    const [patient, prescriptions, labs, visits, doctor, citizenUser] = await Promise.all([
       this.prisma.patient.findUniqueOrThrow({ where: { id: token.patientId }, select: PATIENT_PUBLIC_SELECT }),
       this.prisma.prescription.findMany({ where: { patientId: token.patientId, status: { not: 'DRAFT' } }, include: { items: true }, orderBy: { createdAt: 'desc' }, take: 20 }),
       this.prisma.labSample.findMany({ where: { patientId: token.patientId, status: 'VERIFIED' }, include: { results: true }, orderBy: { verifiedAt: 'desc' }, take: 20 }),
       this.prisma.visit.findMany({ where: { patientId: token.patientId }, orderBy: { arrivedAt: 'desc' }, take: 20 }),
+      this.prisma.user.findUnique({ where: { id: u.id }, select: { fullNameEn: true, fullNameAr: true } }),
+      this.prisma.user.findUnique({ where: { patientId: token.patientId }, select: { id: true } }),
     ]);
+    if (citizenUser) {
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.GENERAL,
+        'Medical Record Share Code Used',
+        'تم استخدام كود مشاركة ملفك الطبي المؤقت',
+        `${doctor?.fullNameEn ?? 'A physician'} accessed your shared medical summary using your 10-character code.`,
+        `قام ${doctor?.fullNameAr ?? 'الطبيب المعالج'} بالاطلاع على ملفك الطبي عبر كود المشاركة المؤقت.`,
+        { doctorId: u.id },
+      );
+    }
     return { patient, prescriptions, labs, visits };
   }
 }
@@ -166,17 +360,19 @@ export class AppointmentsService {
 export class AppointmentsController {
   constructor(private svc: AppointmentsService) {}
 
-  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE) @Get('appointments')
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.ADMIN, Role.EXECUTIVE) @Get('appointments')
   list(@CurrentUser() u: AuthUser) { return this.svc.listAppointments(u); }
-  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.ADMIN) @Post('appointments/:id/confirm')
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.ADMIN) @Post('appointments/:id/confirm')
   confirm(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ConfirmDto, @CurrentUser() u: AuthUser) { return this.svc.confirm(id, dto, u); }
-  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.ADMIN) @Post('appointments/:id/reject')
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.ADMIN) @Post('appointments/:id/check-in')
+  checkIn(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.checkIn(id, u); }
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.ADMIN) @Post('appointments/:id/reject')
   reject(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DecideDto, @CurrentUser() u: AuthUser) { return this.svc.rejectAppointment(id, dto, u); }
   @Roles(Role.RECEPTIONIST, Role.PATIENT, Role.DOCTOR, Role.HOSPITAL_STAFF, Role.ADMIN, Role.EXECUTIVE) @Get('doctors')
   doctors() { return this.svc.doctors(); }
 
   @Audit('RENEWAL') @Roles(Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE) @Get('renewals')
-  renewals() { return this.svc.listRenewals(); }
+  renewals(@CurrentUser() u: AuthUser) { return this.svc.listRenewals(u); }
   @Audit('RENEWAL') @Roles(Role.DOCTOR, Role.ADMIN) @Post('renewals/:id/approve')
   approve(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.approveRenewal(id, u); }
   @Audit('RENEWAL') @Roles(Role.DOCTOR, Role.ADMIN) @Post('renewals/:id/reject')

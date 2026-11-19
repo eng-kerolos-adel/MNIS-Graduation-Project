@@ -604,10 +604,120 @@ class _SovereignSummaryHub extends StatelessWidget {
     final referrals = _list('referrals');
     final radiology = _list('radiology');
     final accessLogs = _list('accessLogs');
+    final activeBed = hub['activeInpatientBed'] is Map
+        ? (hub['activeInpatientBed'] as Map).cast<String, dynamic>()
+        : null;
+    final surgeries = _list('surgeries');
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // 0. Active Inpatient Bed & Surgical Operations (Hospital / OR)
+        if (activeBed != null || surgeries.isNotEmpty) ...[
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: cs.primary.withOpacity(0.35)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text(
+                      isAr
+                          ? 'الإقامة الداخلية والعمليات الجراحية'
+                          : 'Hospital Inpatient & Surgical Care',
+                      style: AppTypography.headlineSm.copyWith(color: cs.primary),
+                    ),
+                    const SizedBox(width: 6),
+                    Icon(Icons.local_hospital_rounded, size: 18, color: cs.primary),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (activeBed != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: cs.secondaryContainer.withOpacity(0.45),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        StatusBadge(
+                          label: isAr ? 'مقيم حالياً' : 'ADMITTED',
+                          backgroundColor: cs.primary,
+                          textColor: cs.onPrimary,
+                          fontSize: 10,
+                        ),
+                        Expanded(
+                          child: Text(
+                            isAr
+                                ? 'قسم ${activeBed['wardAr'] ?? activeBed['wardEn'] ?? ''} • سرير ${activeBed['bedNumber'] ?? ''}'
+                                : '${activeBed['wardEn'] ?? ''} • Bed ${activeBed['bedNumber'] ?? ''}',
+                            style: AppTypography.labelMd.copyWith(
+                              color: cs.onSurface,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ...surgeries.map((op) => Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: cs.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          StatusBadge(
+                            label: '${op['theaterNo'] ?? 'OR-01'} • ${op['status'] ?? 'SCHEDULED'}',
+                            backgroundColor: cs.tertiaryContainer,
+                            textColor: cs.onTertiaryContainer,
+                            fontSize: 10,
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  isAr
+                                      ? '${op['procedureAr'] ?? op['procedureEn'] ?? ''}'
+                                      : '${op['procedureEn'] ?? ''}',
+                                  style: AppTypography.labelMd.copyWith(
+                                    color: cs.onSurface,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                  textAlign: TextAlign.right,
+                                ),
+                                Text(
+                                  isAr
+                                      ? '${op['surgeonNameAr'] ?? ''} • ${op['anaesthesiaAr'] ?? ''}'
+                                      : '${op['surgeonNameEn'] ?? ''} • ${op['anaesthesiaEn'] ?? ''}',
+                                  style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant),
+                                  textAlign: TextAlign.right,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    )),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         // 1. Monthly Chronic Medication Allowances
         if (chronic.isNotEmpty) ...[
           Container(

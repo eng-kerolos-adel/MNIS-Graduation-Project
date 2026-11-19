@@ -11,7 +11,7 @@ import {
   Module,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Role, NfcCardStatus } from '@prisma/client';
+import { Role, NfcCardStatus, NotifType } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { IsEnum, IsString, IsUUID } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,6 +19,7 @@ import { CryptoService } from '../common/crypto.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { CryptoModule } from '../common/crypto.service';
 import { Audit, CurrentUser, AuthUser, Roles, Public } from '../common/decorators';
+import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 // --- DTOs ---
 export class PrintCardDto {
@@ -39,7 +40,11 @@ export class VerifyCardDto {
 // --- Service ---
 @Injectable()
 export class NfcCardsService {
-  constructor(private prisma: PrismaService, private crypto: CryptoService) {}
+  constructor(
+    private prisma: PrismaService,
+    private crypto: CryptoService,
+    private notifs: NotificationsService,
+  ) {}
 
   async print(patientId: string, receptionistId: string) {
     const activeCard = await this.prisma.nfcCard.findFirst({
@@ -138,6 +143,33 @@ export class NfcCardsService {
       throw new NotFoundException('CARD_INVALID_OR_REVOKED');
     }
 
+    await this.prisma.auditLog.create({
+      data: {
+        method: 'POST',
+        path: '/v1/nfc-cards/verify',
+        resourceType: 'BREAK_GLASS_NFC',
+        resourceId: card.patientId,
+        statusCode: 200,
+      },
+    }).catch(() => undefined);
+
+    const citizenUser = await this.prisma.user.findUnique({
+      where: { patientId: card.patientId },
+      select: { id: true },
+    });
+    if (citizenUser) {
+      const cardRef = card.id.slice(0, 8).toUpperCase();
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.GENERAL,
+        'Emergency NFC Card Scanned',
+        'تنبيه طوارئ: تم مسح بطاقة الطوارئ NFC الخاصة بك',
+        `Your emergency NFC card (#${cardRef}) was scanned via Break-Glass emergency protocol.`,
+        `تم مسح بطاقة الطوارئ الذكية الخاصة بك (#${cardRef}) عبر بروتوكول الطوارئ السريع (Break-Glass).`,
+        { cardId: card.id, mti: card.patient.mti },
+      ).catch(() => undefined);
+    }
+
     return {
       cardId: card.id,
       printedAt: card.printedAt,
@@ -204,7 +236,7 @@ export class NfcCardsController {
 
 // --- Module ---
 @Module({
-  imports: [PrismaModule, CryptoModule],
+  imports: [PrismaModule, CryptoModule, NotificationsModule],
   controllers: [NfcCardsController],
   providers: [NfcCardsService],
   exports: [NfcCardsService],

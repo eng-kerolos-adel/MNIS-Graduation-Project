@@ -16,14 +16,21 @@ export class AuditInterceptor implements NestInterceptor {
     private crypto: CryptoService,
   ) {}
 
-  private hydrateNationalId(val: unknown, seen = new WeakSet<object>()): unknown {
+  private maskIfRestricted(raw: string, role?: string): string {
+    if (role === 'LAB_TECH' || role === 'PHARMACIST') {
+      return raw.length >= 4 ? `**********${raw.slice(-4)}` : raw;
+    }
+    return raw;
+  }
+
+  private hydrateNationalId(val: unknown, role?: string, seen = new WeakSet<object>()): unknown {
     if (!val || typeof val !== 'object') return val;
     if (val instanceof Date || Buffer.isBuffer(val)) return val;
     if (seen.has(val as object)) return val;
     seen.add(val as object);
 
     if (Array.isArray(val)) {
-      return val.map((item) => this.hydrateNationalId(item, seen));
+      return val.map((item) => this.hydrateNationalId(item, role, seen));
     }
 
     const obj = val as Record<string, unknown>;
@@ -32,17 +39,21 @@ export class AuditInterceptor implements NestInterceptor {
       if (k === 'nationalIdEnc' && typeof v === 'string') {
         if (!obj.nationalId) {
           try {
-            out.nationalId = this.crypto.decrypt(v);
+            out.nationalId = this.maskIfRestricted(this.crypto.decrypt(v), role);
           } catch {
             out.nationalId = '';
           }
         }
         continue;
       }
+      if (k === 'nationalId' && typeof v === 'string') {
+        out[k] = this.maskIfRestricted(v, role);
+        continue;
+      }
       if (k === 'nationalIdIdx') {
         continue;
       }
-      out[k] = this.hydrateNationalId(v, seen);
+      out[k] = this.hydrateNationalId(v, role, seen);
     }
     return out;
   }
@@ -69,7 +80,7 @@ export class AuditInterceptor implements NestInterceptor {
         .catch((e) => this.logger.error(`audit write failed: ${e?.message}`));
     };
     return next.handle().pipe(
-      map((data) => this.hydrateNationalId(data)),
+      map((data) => this.hydrateNationalId(data, req.user?.role)),
       tap({
         next: () => write(res.statusCode),
         error: (e) => write(typeof e?.getStatus === 'function' ? e.getStatus() : 500),

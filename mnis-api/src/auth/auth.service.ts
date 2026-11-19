@@ -40,7 +40,23 @@ export class AuthService {
       await this.prisma.user.update({ where: { id: user.id }, data: { failedLogins: 0, lockedUntil: null } });
     }
     const tokens = await this.issue(user.id, user.role, randomUUID(), meta);
-    return { ...tokens, user: { id: user.id, email: user.email, role: user.role, fullNameEn: user.fullNameEn, fullNameAr: user.fullNameAr, patientId: user.patientId, mustChangePassword: user.mustChangePassword } };
+    return {
+      ...tokens,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        fullNameEn: user.fullNameEn,
+        fullNameAr: user.fullNameAr,
+        licenseNo: user.licenseNo,
+        specialityEn: user.specialityEn,
+        specialityAr: user.specialityAr,
+        facilityEn: user.facilityEn,
+        facilityAr: user.facilityAr,
+        patientId: user.patientId,
+        mustChangePassword: user.mustChangePassword,
+      },
+    };
   }
 
   async refresh(rawToken: string | undefined, meta: ClientMeta) {
@@ -48,13 +64,24 @@ export class AuthService {
     const row = await this.prisma.refreshToken.findUnique({ where: { tokenHash: this.crypto.sha256(rawToken) }, include: { user: true } });
     if (!row) throw new UnauthorizedException();
     if (row.revokedAt) {
-      // A rotated token was presented again => likely theft. Kill the whole family.
+      const elapsedMs = Date.now() - row.revokedAt.getTime();
+      // Only allow the 10s grace window if the session family still has an active unrevoked token
+      // (i.e. concurrent rotation in progress, NOT explicitly logged out / revoked).
+      if (elapsedMs <= 10_000 && row.expiresAt >= new Date() && row.user.isActive) {
+        const activeSibling = await this.prisma.refreshToken.findFirst({
+          where: { familyId: row.familyId, revokedAt: null },
+          select: { id: true },
+        });
+        if (activeSibling) {
+          return this.issue(row.userId, row.user.role, row.familyId, meta);
+        }
+      }
+      // A rotated or logged-out token was presented again => kill the whole family.
       await this.prisma.refreshToken.updateMany({ where: { familyId: row.familyId, revokedAt: null }, data: { revokedAt: new Date() } });
       throw new UnauthorizedException();
     }
     if (row.expiresAt < new Date() || !row.user.isActive) throw new UnauthorizedException();
-    await this.prisma.refreshToken.update({ where: { id: row.id }, data: { revokedAt: new Date() } });
-    return this.issue(row.userId, row.user.role, row.familyId, meta);
+    return this.issue(row.userId, row.user.role, row.familyId, meta, row.id);
   }
 
   async logout(rawToken: string | undefined) {
@@ -66,8 +93,28 @@ export class AuthService {
   me(userId: string) {
     return this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, role: true, fullNameEn: true, fullNameAr: true, licenseNo: true, patientId: true, mustChangePassword: true },
+      select: {
+        id: true, email: true, role: true, fullNameEn: true, fullNameAr: true,
+        licenseNo: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true,
+        patientId: true, mustChangePassword: true,
+      },
     });
+  }
+
+  listSessions(userId: string) {
+    return this.prisma.refreshToken.findMany({
+      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, ip: true, userAgent: true, createdAt: true, expiresAt: true },
+    });
+  }
+
+  async revokeAllSessions(userId: string) {
+    const res = await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return { revoked: res.count };
   }
 
   async changePassword(userId: string, current: string, next: string) {
@@ -81,10 +128,10 @@ export class AuthService {
     return { ok: true, reloginRequired: true };
   }
 
-  private async issue(userId: string, role: string, familyId: string, meta: ClientMeta) {
+  private async issue(userId: string, role: string, familyId: string, meta: ClientMeta, revokeId?: string) {
     const accessToken = await this.jwt.signAsync({ sub: userId, role }, { secret: env.JWT_ACCESS_SECRET, expiresIn: env.ACCESS_TTL_SECONDS, algorithm: 'HS256' });
     const refreshToken = randomBytes(48).toString('base64url');
-    await this.prisma.refreshToken.create({
+    const createOp = this.prisma.refreshToken.create({
       data: {
         userId, familyId,
         tokenHash: this.crypto.sha256(refreshToken),
@@ -92,6 +139,14 @@ export class AuthService {
         ip: meta.ip?.slice(0, 64), userAgent: meta.userAgent?.slice(0, 200),
       },
     });
+    if (revokeId) {
+      await this.prisma.$transaction([
+        this.prisma.refreshToken.update({ where: { id: revokeId }, data: { revokedAt: new Date() } }),
+        createOp,
+      ]);
+    } else {
+      await createOp;
+    }
     return { accessToken, refreshToken, expiresIn: env.ACCESS_TTL_SECONDS };
   }
 }

@@ -70,7 +70,7 @@ export class UpdateOrCaseDto {
 export class OrService {
   constructor(private prisma: PrismaService) {}
 
-  async listCases(date?: string) {
+  async listCases(u: AuthUser, date?: string) {
     let whereClause = {};
     if (date) {
       const startOfDay = new Date(date);
@@ -80,7 +80,7 @@ export class OrService {
       whereClause = { scheduledStart: { gte: startOfDay, lte: endOfDay } };
     }
 
-    const [cases, doctors] = await Promise.all([
+    const [cases, doctors, actor] = await Promise.all([
       this.prisma.orCase.findMany({
         where: whereClause,
         include: {
@@ -91,18 +91,35 @@ export class OrService {
       }),
       this.prisma.user.findMany({
         where: { role: 'DOCTOR' },
-        select: { id: true, fullNameEn: true, fullNameAr: true },
+        select: { id: true, fullNameEn: true, fullNameAr: true, facilityEn: true },
       }),
+      this.prisma.user.findUnique({ where: { id: u.id }, select: { facilityEn: true } }),
     ]);
 
     const docMap = new Map(doctors.map((d) => [d.id, d]));
+    const mapped = cases.map((c) => {
+      const surgeon = docMap.get(c.surgeonId) || doctors[0] || { id: '', fullNameEn: 'Dr. Tarek El-Masry', fullNameAr: 'د. طارق المصري', facilityEn: null };
+      return {
+        ...c,
+        theaterCode: c.theaterNo || 'OR-01',
+        scheduledAt: c.scheduledStart,
+        surgeon,
+      };
+    });
 
-    return cases.map((c) => ({
-      ...c,
-      theaterCode: c.theaterNo || 'OR-01',
-      scheduledAt: c.scheduledStart,
-      surgeon: docMap.get(c.surgeonId) || doctors[0] || { fullNameEn: 'Dr. Tarek El-Masry', fullNameAr: 'د. طارق المصري' },
-    }));
+    if (u.role === Role.HOSPITAL_STAFF && actor?.facilityEn) {
+      const myFac = actor.facilityEn.trim().toLowerCase();
+      return mapped.filter((c) => {
+        if (c.createdById === u.id) return true;
+        const surgFac = (c.surgeon?.facilityEn ?? '').trim().toLowerCase();
+        const bedWard = (c.bed?.wardEn ?? '').trim().toLowerCase();
+        if (bedWard && bedWard.includes(myFac)) return true;
+        if (surgFac && surgFac === myFac) return true;
+        return !bedWard.includes(' — ');
+      });
+    }
+
+    return mapped;
   }
 
   async createCase(dto: CreateOrCaseDto, createdById: string) {
@@ -164,8 +181,8 @@ export class OrController {
   constructor(private svc: OrService) {}
 
   @Get()
-  list(@Query('date') date?: string) {
-    return this.svc.listCases(date);
+  list(@CurrentUser() user: AuthUser, @Query('date') date?: string) {
+    return this.svc.listCases(user, date);
   }
 
   @Post()

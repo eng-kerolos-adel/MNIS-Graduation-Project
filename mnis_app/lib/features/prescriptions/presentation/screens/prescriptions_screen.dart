@@ -395,6 +395,28 @@ class _PrescriptionCardState extends ConsumerState<_PrescriptionCard> {
                   Text(rx.diagnosis.pick(widget.locale),
                       style: AppTypography.bodySm.copyWith(color: cs.onSurfaceVariant),
                       textAlign: TextAlign.right),
+                  if (rx.physicianName != null &&
+                      (rx.physicianName!.ar.isNotEmpty || rx.physicianName!.en.isNotEmpty)) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            rx.physicianSpeciality != null &&
+                                    (rx.physicianSpeciality!.ar.isNotEmpty ||
+                                        rx.physicianSpeciality!.en.isNotEmpty)
+                                ? '${rx.physicianName!.pick(widget.locale)} • ${rx.physicianSpeciality!.pick(widget.locale)}'
+                                : rx.physicianName!.pick(widget.locale),
+                            style: AppTypography.labelSm.copyWith(color: cs.secondary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(Icons.medical_services_rounded, size: 13, color: cs.secondary),
+                      ],
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   Row(
                     children: [

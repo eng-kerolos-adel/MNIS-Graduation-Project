@@ -10,6 +10,7 @@ import '../../../../core/l10n/app_localizations.dart';
 import '../../../../core/models/models.dart';
 import '../../../../core/providers/data_providers.dart';
 import '../../../../core/providers/emergency_contacts_provider.dart';
+import '../../../../core/providers/session_provider.dart';
 import '../../../../core/router/app_router.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_typography.dart';
@@ -134,6 +135,8 @@ class _EmergencyQrScreenState extends ConsumerState<EmergencyQrScreen>
                         ),
                         const SizedBox(height: 14),
                         _VitalsGrid(l: l, cs: cs, isAr: isAr, card: card),
+                        const SizedBox(height: 14),
+                        _OrganDonorToggleCard(cs: cs, isAr: isAr, card: card),
                         const SizedBox(height: 14),
                         _AllergyStrip(cs: cs, isAr: isAr, card: card, locale: locale),
                         const SizedBox(height: 14),
@@ -733,6 +736,98 @@ class _ActionButtons extends StatelessWidget {
           label: Text(l.regenerateQr, style: AppTypography.labelLg.copyWith(color: cs.onSurfaceVariant)),
         ),
       ],
+    );
+  }
+}
+
+class _OrganDonorToggleCard extends ConsumerStatefulWidget {
+  final ColorScheme cs;
+  final bool isAr;
+  final EmergencyCard card;
+  const _OrganDonorToggleCard({
+    required this.cs,
+    required this.isAr,
+    required this.card,
+  });
+
+  @override
+  ConsumerState<_OrganDonorToggleCard> createState() => _OrganDonorToggleCardState();
+}
+
+class _OrganDonorToggleCardState extends ConsumerState<_OrganDonorToggleCard> {
+  bool _saving = false;
+
+  Future<void> _toggle(bool val) async {
+    setState(() => _saving = true);
+    try {
+      await ref.read(repositoryProvider).updateOrganDonor(val);
+      ref.invalidate(emergencyCardProvider);
+      ref.invalidate(profileProvider);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.isAr
+                ? 'تم تحديث رغبة التبرع بالأعضاء في بطاقة الطوارئ وملفك الطبي'
+                : 'Organ donor preference updated on your emergency card',
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.isAr ? 'تعذر تحديث الإعداد حالياً' : 'Could not update preference right now',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = widget.cs;
+    final isAr = widget.isAr;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.outlineVariant.withOpacity(0.5)),
+      ),
+      child: Row(
+        children: [
+          Switch.adaptive(
+            value: widget.card.organDonor,
+            onChanged: _saving ? null : _toggle,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  isAr ? 'تسجيل الموافقة على التبرع بالأعضاء' : 'Organ Donor Registry Consent',
+                  style: AppTypography.labelLg.copyWith(color: cs.onSurface),
+                  textAlign: TextAlign.right,
+                ),
+                Text(
+                  isAr
+                      ? 'يظهر فوراً على بطاقة الطوارئ QR/NFC لفرق الإنقاذ'
+                      : 'Immediately synced to your Emergency QR/NFC rescue card',
+                  style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant),
+                  textAlign: TextAlign.right,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Icon(Icons.volunteer_activism_rounded, color: cs.tertiary, size: 22),
+        ],
+      ),
     );
   }
 }

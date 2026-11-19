@@ -12,11 +12,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Role, ClaimStatus } from '@prisma/client';
+import { Role, ClaimStatus, NotifType } from '@prisma/client';
 import { IsNumber, IsString, IsInt, Min, Max, IsUUID, IsOptional, IsDateString } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { Audit, CurrentUser, AuthUser, Roles } from '../common/decorators';
+import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 // --- DTOs ---
 export class CreateClaimDto {
@@ -58,6 +59,9 @@ export class CreateDrugDto {
   form?: string;
   @IsString()
   @IsOptional()
+  dose?: string;
+  @IsString()
+  @IsOptional()
   batchNo?: string;
   @IsDateString()
   @IsOptional()
@@ -70,7 +74,12 @@ export class CreateDrugDto {
   reorderAt: number;
   @IsNumber()
   @Min(0)
-  unitCost: number;
+  @IsOptional()
+  unitCost?: number;
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  unitPrice?: number;
 }
 
 export class UpdateDrugDto {
@@ -83,7 +92,10 @@ export class UpdateDrugDto {
 // --- Service ---
 @Injectable()
 export class PharmacyService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private notifs: NotificationsService,
+  ) {}
 
   // -- CLAIMS --
   async createClaim(dto: CreateClaimDto, pharmacistId: string) {
@@ -96,10 +108,21 @@ export class PharmacyService {
       throw new BadRequestException('Prescription must be dispensed before claiming');
     }
 
-    // Free tier demo simplification: flat 100 EGP per item for demo
-    const totalAmount = rx.items.length * 100;
-    const insuranceAmount = totalAmount * (dto.coveragePct / 100);
-    const patientBalance = totalAmount - insuranceAmount;
+    let totalAmount = 0;
+    for (const item of rx.items) {
+      const drug = await this.prisma.drugInventory.findFirst({
+        where: {
+          OR: [
+            { nameEn: { contains: item.nameEn.split(' ')[0], mode: 'insensitive' } },
+            { nameAr: { contains: item.nameAr.split(' ')[0] } },
+          ],
+        },
+      });
+      totalAmount += (drug?.unitCost ?? 45) * item.quantity;
+    }
+    totalAmount = Number(totalAmount.toFixed(2));
+    const insuranceAmount = Number((totalAmount * (dto.coveragePct / 100)).toFixed(2));
+    const patientBalance = Number((totalAmount - insuranceAmount).toFixed(2));
 
     return this.prisma.pharmacyClaim.create({
       data: {
@@ -261,27 +284,63 @@ export class PharmacyService {
       ...a,
       medicationEn: a.nameEn,
       medicationAr: a.nameAr,
+      drugNameEn: a.nameEn,
+      drugNameAr: a.nameAr,
       consumedThisMonth: a.consumed,
+      dispensedThisMonth: a.consumed,
       resetDate: a.resetAt,
       dose: 'حصة شهرية معتمدة (UHIA)',
     }));
   }
 
   async dispenseAllowance(dto: DispenseAllowanceDto) {
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const allowance = await tx.chronicAllowance.findUnique({ where: { id: dto.allowanceId } });
       if (!allowance) throw new NotFoundException('Allowance not found');
-      
+
       const newConsumed = allowance.consumed + dto.quantity;
       if (newConsumed > allowance.monthlyLimit) {
         throw new BadRequestException('Exceeds monthly limit');
       }
 
+      const drug = await tx.drugInventory.findFirst({
+        where: {
+          OR: [
+            { nameEn: { contains: allowance.nameEn.split(' ')[0], mode: 'insensitive' } },
+            { nameAr: { contains: allowance.nameAr.split(' ')[0] } },
+          ],
+        },
+      });
+      if (drug) {
+        await tx.drugInventory.update({
+          where: { id: drug.id },
+          data: { quantity: Math.max(0, drug.quantity - dto.quantity) },
+        });
+      }
+
       return tx.chronicAllowance.update({
         where: { id: allowance.id },
-        data: { consumed: newConsumed }
+        data: { consumed: newConsumed },
       });
     });
+
+    const citizenUser = await this.prisma.user.findUnique({
+      where: { patientId: updated.patientId },
+      select: { id: true },
+    });
+    if (citizenUser) {
+      const remaining = Math.max(0, updated.monthlyLimit - updated.consumed);
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.PRESCRIPTION_DISPENSED,
+        'Chronic Medication Quota Dispensed',
+        'تم صرف حصة من دوائك المزمن',
+        `Dispensed ${dto.quantity} unit(s) of ${updated.nameEn}. Remaining monthly quota: ${remaining}/${updated.monthlyLimit}.`,
+        `تم صرف (${dto.quantity}) عبوة من دوائك المزمن (${updated.nameAr}). الرصيد المتبقي لهذا الشهر: ${remaining} من ${updated.monthlyLimit}.`,
+        { allowanceId: updated.id, remaining },
+      );
+    }
+    return updated;
   }
 
   // -- INVENTORY --
@@ -292,11 +351,16 @@ export class PharmacyService {
   }
 
   async createDrug(dto: CreateDrugDto) {
+    const { dose, unitPrice, unitCost, expiryDate, ...rest } = dto;
+    const d = dose?.trim();
     return this.prisma.drugInventory.create({
       data: {
-        ...dto,
-        expiryDate: dto.expiryDate ? new Date(dto.expiryDate) : null
-      }
+        ...rest,
+        nameEn: d && !rest.nameEn.includes(d) ? `${rest.nameEn} ${d}`.trim() : rest.nameEn,
+        nameAr: d && !rest.nameAr.includes(d) ? `${rest.nameAr} (${d})`.trim() : rest.nameAr,
+        unitCost: unitCost ?? unitPrice ?? 45,
+        expiryDate: expiryDate ? new Date(expiryDate) : null,
+      },
     });
   }
 
@@ -391,7 +455,7 @@ export class PharmacyController {
 
 // --- Module ---
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, NotificationsModule],
   controllers: [PharmacyController],
   providers: [PharmacyService],
   exports: [PharmacyService],

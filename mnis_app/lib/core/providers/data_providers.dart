@@ -71,6 +71,11 @@ final doctorsProvider = FutureProvider.autoDispose<List<DoctorOption>>((ref) asy
   return ref.watch(repositoryProvider).doctors();
 });
 
+final labsProvider = FutureProvider.autoDispose<List<LabFacilityOption>>((ref) async {
+  ref.watch(_uidProvider);
+  return ref.watch(repositoryProvider).labs();
+});
+
 final documentsProvider = FutureProvider.autoDispose<List<DocumentModel>>((ref) async {
   ref.watch(_uidProvider);
   return ref.watch(repositoryProvider).documents();

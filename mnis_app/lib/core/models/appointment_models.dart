@@ -30,6 +30,9 @@ class AppointmentModel {
   final AppointmentStatus status;
   final DateTime? scheduledAt;
   final String? note;
+  final Bilingual? doctorName;
+  final Bilingual? doctorSpeciality;
+  final Bilingual? facilityName;
 
   const AppointmentModel({
     required this.id,
@@ -40,6 +43,9 @@ class AppointmentModel {
     required this.status,
     required this.scheduledAt,
     required this.note,
+    this.doctorName,
+    this.doctorSpeciality,
+    this.facilityName,
   });
 
   bool get isCancellable =>
@@ -56,6 +62,28 @@ class AppointmentModel {
         status: _apptStatusFrom(j['status'] as String? ?? 'REQUESTED'),
         scheduledAt: parseDate(j['scheduledAt']),
         note: j['note'] as String?,
+        doctorName: j['doctor'] is Map
+            ? Bilingual.of({
+                'en': (j['doctor'] as Map)['fullNameEn'],
+                'ar': (j['doctor'] as Map)['fullNameAr'],
+              })
+            : null,
+        doctorSpeciality: j['doctor'] is Map &&
+                (((j['doctor'] as Map)['specialityEn'] != null) ||
+                    ((j['doctor'] as Map)['specialityAr'] != null))
+            ? Bilingual.of({
+                'en': (j['doctor'] as Map)['specialityEn'],
+                'ar': (j['doctor'] as Map)['specialityAr'],
+              })
+            : null,
+        facilityName: j['doctor'] is Map &&
+                (((j['doctor'] as Map)['facilityEn'] != null) ||
+                    ((j['doctor'] as Map)['facilityAr'] != null))
+            ? Bilingual.of({
+                'en': (j['doctor'] as Map)['facilityEn'],
+                'ar': (j['doctor'] as Map)['facilityAr'],
+              })
+            : null,
       );
 }
 
@@ -97,11 +125,34 @@ class DocumentModel {
 class DoctorOption {
   final String id;
   final Bilingual name;
-  const DoctorOption(this.id, this.name);
+  final Bilingual speciality;
+  final Bilingual facility;
+  const DoctorOption(this.id, this.name, this.speciality, this.facility);
 
   factory DoctorOption.fromJson(Map<String, dynamic> j) => DoctorOption(
         j['id'] as String,
         Bilingual.of({'en': j['fullNameEn'], 'ar': j['fullNameAr']}),
+        Bilingual.of({'en': j['specialityEn'], 'ar': j['specialityAr']}),
+        Bilingual.of({'en': j['facilityEn'], 'ar': j['facilityAr']}),
+      );
+}
+
+class LabFacilityOption {
+  final String id;
+  final Bilingual name;
+  final Bilingual staffName;
+  const LabFacilityOption(this.id, this.name, this.staffName);
+
+  factory LabFacilityOption.fromJson(Map<String, dynamic> j) => LabFacilityOption(
+        j['id'] as String,
+        Bilingual.of({
+          'en': j['nameEn'] ?? j['facilityEn'],
+          'ar': j['nameAr'] ?? j['facilityAr'],
+        }),
+        Bilingual.of({
+          'en': j['staffNameEn'] ?? j['fullNameEn'],
+          'ar': j['staffNameAr'] ?? j['fullNameAr'],
+        }),
       );
 }
 

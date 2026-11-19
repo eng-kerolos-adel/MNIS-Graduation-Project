@@ -252,6 +252,8 @@ class PrescriptionModel {
   final DateTime createdAt;
   final DateTime? dispensedAt;
   final List<PrescriptionItem> items;
+  final Bilingual? physicianName;
+  final Bilingual? physicianSpeciality;
 
   const PrescriptionModel({
     required this.id,
@@ -262,6 +264,8 @@ class PrescriptionModel {
     required this.createdAt,
     required this.dispensedAt,
     required this.items,
+    this.physicianName,
+    this.physicianSpeciality,
   });
 
   bool get canRequestRenewal => status == RxStatus.dispensed;
@@ -279,6 +283,20 @@ class PrescriptionModel {
         items: (j['items'] as List? ?? [])
             .map((e) => PrescriptionItem.fromJson(e as Map<String, dynamic>))
             .toList(),
+        physicianName: j['physician'] is Map
+            ? Bilingual.of({
+                'en': (j['physician'] as Map)['fullNameEn'],
+                'ar': (j['physician'] as Map)['fullNameAr'],
+              })
+            : null,
+        physicianSpeciality: j['physician'] is Map &&
+                (((j['physician'] as Map)['specialityEn'] != null) ||
+                    ((j['physician'] as Map)['specialityAr'] != null))
+            ? Bilingual.of({
+                'en': (j['physician'] as Map)['specialityEn'],
+                'ar': (j['physician'] as Map)['specialityAr'],
+              })
+            : null,
       );
 }
 
@@ -329,6 +347,7 @@ class LabResultRow {
 class LabResultPanel {
   final String id;
   final String barcode;
+  final String status;
   final Bilingual panel;
   final Bilingual sampleType;
   final DateTime collectedAt;
@@ -338,6 +357,7 @@ class LabResultPanel {
   const LabResultPanel({
     required this.id,
     required this.barcode,
+    this.status = 'VERIFIED',
     required this.panel,
     required this.sampleType,
     required this.collectedAt,
@@ -345,6 +365,7 @@ class LabResultPanel {
     required this.rows,
   });
 
+  bool get isVerified => status == 'VERIFIED';
   bool get hasCritical => rows.any((r) => r.flag == ResultFlag.critical);
   bool get hasAbnormal =>
       rows.any((r) => r.flag != ResultFlag.normal);
@@ -352,6 +373,7 @@ class LabResultPanel {
   factory LabResultPanel.fromJson(Map<String, dynamic> j) => LabResultPanel(
         id: j['id'] as String,
         barcode: (j['barcode'] as String?) ?? '',
+        status: (j['status'] as String?) ?? 'VERIFIED',
         panel: Bilingual.of({'en': j['panelEn'], 'ar': j['panelAr']}),
         sampleType:
             Bilingual.of({'en': j['sampleTypeEn'], 'ar': j['sampleTypeAr']}),
@@ -372,6 +394,7 @@ class VisitModel {
   final String status;
   final DateTime arrivedAt;
   final DateTime? completedAt;
+  final Bilingual? doctorName;
 
   const VisitModel({
     required this.id,
@@ -380,6 +403,7 @@ class VisitModel {
     required this.status,
     required this.arrivedAt,
     required this.completedAt,
+    this.doctorName,
   });
 
   factory VisitModel.fromJson(Map<String, dynamic> j) => VisitModel(
@@ -389,6 +413,12 @@ class VisitModel {
         status: (j['status'] as String?) ?? 'WAITING',
         arrivedAt: parseDate(j['arrivedAt']) ?? DateTime.now(),
         completedAt: parseDate(j['completedAt']),
+        doctorName: j['doctor'] is Map
+            ? Bilingual.of({
+                'en': (j['doctor'] as Map)['fullNameEn'],
+                'ar': (j['doctor'] as Map)['fullNameAr'],
+              })
+            : null,
       );
 }
 

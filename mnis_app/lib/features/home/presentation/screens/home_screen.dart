@@ -40,6 +40,7 @@ class HomeScreen extends ConsumerWidget {
           onRefresh: () async {
             ref.invalidate(profileProvider);
             ref.invalidate(dashboardStatsProvider);
+            ref.invalidate(summaryHubProvider);
             ref.invalidate(emergencyCardProvider);
             await ref.read(profileProvider.future).catchError((_) => null);
           },
@@ -130,6 +131,22 @@ class HomeScreen extends ConsumerWidget {
                       builder: (context, patient) =>
                           _MedicalIdentityCard(l: l, cs: cs, patient: patient, locale: locale),
                     ),
+                    Consumer(builder: (context, ref, _) {
+                      final hubAsync = ref.watch(summaryHubProvider);
+                      final ticket = hubAsync.value?['activeQueueTicket'];
+                      if (ticket is! Map<String, dynamic>) {
+                        return const SizedBox.shrink();
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 16),
+                        child: _LiveQueueTicketCard(
+                          cs: cs,
+                          isAr: isAr,
+                          ticket: ticket,
+                          onRefresh: () => ref.invalidate(summaryHubProvider),
+                        ),
+                      );
+                    }),
                     const SizedBox(height: 16),
                     Consumer(builder: (context, ref, _) {
                       final stats = ref.watch(dashboardStatsProvider);
@@ -650,6 +667,120 @@ class _ActivityRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _LiveQueueTicketCard extends StatelessWidget {
+  final ColorScheme cs;
+  final bool isAr;
+  final Map<String, dynamic> ticket;
+  final VoidCallback onRefresh;
+  const _LiveQueueTicketCard({
+    required this.cs,
+    required this.isAr,
+    required this.ticket,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final status = (ticket['status'] as String?) ?? 'WAITING';
+    final inRoom = status == 'IN_CONSULTATION';
+    final ticketNo = (ticket['ticketNo'] as String?) ?? '—';
+    final aheadCount = (ticket['aheadCount'] as num?)?.toInt() ?? 0;
+    final doctorName = isAr
+        ? ((ticket['doctorNameAr'] as String?) ?? '')
+        : ((ticket['doctorNameEn'] as String?) ?? '');
+    final speciality = isAr
+        ? ((ticket['specialityAr'] as String?) ?? '')
+        : ((ticket['specialityEn'] as String?) ?? '');
+    final facility = isAr
+        ? ((ticket['facilityAr'] as String?) ?? '')
+        : ((ticket['facilityEn'] as String?) ?? '');
+    final reason = isAr
+        ? ((ticket['reasonAr'] as String?) ?? '')
+        : ((ticket['reasonEn'] as String?) ?? '');
+
+    final accentColor = inRoom ? Colors.green.shade700 : AppColors.secondary;
+    final bgColor = inRoom
+        ? Colors.green.withOpacity(0.12)
+        : cs.secondaryContainer.withOpacity(0.35);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accentColor.withOpacity(0.45), width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: accentColor,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  ticketNo,
+                  style: AppTypography.headlineSm.copyWith(color: Colors.white),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      inRoom
+                          ? (isAr
+                              ? 'الطبيب يناديك الآن — تفضل بالدخول لغرفة الكشف'
+                              : 'Your turn now — Please enter consultation room')
+                          : (isAr
+                              ? 'دورك المباشر في طابور العيادة ($aheadCount قبلك)'
+                              : 'Live Clinic Queue ($aheadCount ahead of you)'),
+                      style: AppTypography.labelLg.copyWith(color: accentColor),
+                    ),
+                    if (reason.isNotEmpty)
+                      Text(
+                        reason,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTypography.bodySm.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: onRefresh,
+                icon: Icon(Icons.refresh_rounded, color: accentColor, size: 20),
+                tooltip: isAr ? 'تحديث الدور' : 'Refresh queue',
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Divider(height: 1, color: accentColor.withOpacity(0.2)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(Icons.medical_services_rounded, size: 15, color: cs.primary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '$doctorName${speciality.isNotEmpty ? ' • $speciality' : ''}${facility.isNotEmpty ? ' ($facility)' : ''}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTypography.labelSm.copyWith(color: cs.onSurface),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

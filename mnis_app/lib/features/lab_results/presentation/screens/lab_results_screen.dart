@@ -112,9 +112,10 @@ class _LabResultsScreenState extends ConsumerState<LabResultsScreen> {
                       builder: (context, panels) {
                         final filtered = switch (_filter) {
                           _Filter.all => panels,
-                          _Filter.normal => panels.where((p) => !p.hasAbnormal).toList(),
+                          _Filter.normal => panels.where((p) => p.rows.isNotEmpty && !p.hasAbnormal).toList(),
                           _Filter.abnormal => panels.where((p) => p.hasAbnormal).toList(),
                         };
+                        final normalCount = panels.where((p) => p.rows.isNotEmpty && !p.hasAbnormal).length;
                         final abnormalCount = panels.where((p) => p.hasAbnormal).length;
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
@@ -134,7 +135,7 @@ class _LabResultsScreenState extends ConsumerState<LabResultsScreen> {
                                   const SizedBox(width: 8),
                                   _FilterChip(
                                     label:
-                                        '${isAr ? "طبيعية" : "Normal"} (${panels.length - abnormalCount})',
+                                        '${isAr ? "طبيعية" : "Normal"} ($normalCount)',
                                     selected: _filter == _Filter.normal,
                                     onTap: () => setState(() => _filter = _Filter.normal),
                                     cs: cs,
@@ -233,12 +234,55 @@ class _LabPanelCardState extends State<_LabPanelCard> {
         ResultFlag.normal => cs.onSurface,
       };
 
+  ({String label, IconData icon, Color bg, Color fg}) _sampleStatusMeta(LabResultPanel p, bool isAr, ColorScheme cs) {
+    switch (p.status) {
+      case 'VERIFIED':
+        return (
+          label: isAr ? 'معتمد وموقع رقمياً' : 'Digitally verified',
+          icon: Icons.verified,
+          bg: cs.surfaceContainerHigh,
+          fg: cs.secondary,
+        );
+      case 'RESULTS_ENTERED':
+        return (
+          label: isAr ? 'بانتظار الاعتماد النهائي' : 'Awaiting verification',
+          icon: Icons.hourglass_bottom_rounded,
+          bg: cs.secondaryContainer,
+          fg: cs.onSecondaryContainer,
+        );
+      case 'PROCESSING':
+      case 'RECEIVED':
+      case 'IN_TRANSIT':
+        return (
+          label: isAr ? 'قيد التحليل بالمعمل' : 'In analysis',
+          icon: Icons.science_rounded,
+          bg: cs.tertiaryContainer,
+          fg: cs.onTertiaryContainer,
+        );
+      case 'REJECTED':
+        return (
+          label: isAr ? 'عينة مرفوضة' : 'Rejected',
+          icon: Icons.cancel_outlined,
+          bg: cs.errorContainer,
+          fg: cs.onErrorContainer,
+        );
+      default:
+        return (
+          label: isAr ? 'تم إصدار الباركود — بانتظار السحب' : 'Awaiting sample collection',
+          icon: Icons.qr_code_2_rounded,
+          bg: cs.primaryContainer,
+          fg: cs.onPrimaryContainer,
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = widget.cs;
     final isAr = widget.isAr;
     final p = widget.panel;
     final df = DateFormat.yMMMd(isAr ? 'ar' : 'en');
+    final stMeta = _sampleStatusMeta(p, isAr, cs);
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -254,10 +298,10 @@ class _LabPanelCardState extends State<_LabPanelCard> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               StatusBadge(
-                label: isAr ? 'معتمد وموقع رقمياً' : 'Digitally verified',
-                backgroundColor: cs.surfaceContainerHigh,
-                textColor: cs.secondary,
-                icon: Icons.verified,
+                label: stMeta.label,
+                backgroundColor: stMeta.bg,
+                textColor: stMeta.fg,
+                icon: stMeta.icon,
                 fontSize: 10,
               ),
               Text('#${p.barcode}', style: AppTypography.mono.copyWith(color: cs.onSurfaceVariant)),
@@ -270,83 +314,261 @@ class _LabPanelCardState extends State<_LabPanelCard> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(p.verifiedAt == null ? '' : df.format(p.verifiedAt!),
+              Text(p.verifiedAt == null ? df.format(p.collectedAt) : df.format(p.verifiedAt!),
                   style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant)),
               Text(p.sampleType.pick(widget.locale),
                   style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant)),
             ],
           ),
           const SizedBox(height: 12),
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            borderRadius: BorderRadius.circular(10),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: p.hasAbnormal ? cs.errorContainer : cs.tertiaryContainer.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(_expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
-                    size: 16,
-                    color: p.hasAbnormal ? cs.onErrorContainer : cs.onTertiaryContainer),
-                const SizedBox(width: 4),
-                Text(
-                  p.hasAbnormal
-                      ? (isAr
-                          ? '${p.rows.where((r) => r.flag != ResultFlag.normal).length} خارج النطاق الطبيعي'
-                          : '${p.rows.where((r) => r.flag != ResultFlag.normal).length} out of normal range')
-                      : (isAr ? 'كل المؤشرات طبيعية' : 'All indicators normal'),
-                  style: AppTypography.labelMd.copyWith(
-                      color: p.hasAbnormal ? cs.onErrorContainer : cs.onTertiaryContainer),
-                ),
-              ]),
-            ),
-          ),
-          if (_expanded) ...[
-            const SizedBox(height: 10),
+          if (!p.isVerified && p.rows.isEmpty) ...[
             Container(
+              width: double.infinity,
               padding: const EdgeInsets.all(12),
-              decoration:
-                  BoxDecoration(color: cs.surfaceContainerLow, borderRadius: BorderRadius.circular(10)),
-              child: Column(
-                children: [
-                  for (final row in p.rows) ...[
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Text('${row.value} ${row.unit}',
-                            style: AppTypography.headlineSm.copyWith(
-                                color: _flagColor(row.flag, cs), fontWeight: FontWeight.w700)),
-                        const Spacer(),
-                        Expanded(
-                          flex: 2,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(row.analyte.pick(widget.locale),
-                                  textAlign: TextAlign.right,
-                                  style: AppTypography.bodySm.copyWith(color: cs.onSurface)),
-                              Text('${row.refLow}–${row.refHigh} ${row.unit}',
-                                  style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (row != p.rows.last)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Divider(height: 1, color: cs.outlineVariant.withOpacity(0.4)),
-                      ),
-                  ],
-                ],
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                isAr
+                    ? 'العينة مسجلة برقم باركود (#${p.barcode}) وحالتها (${stMeta.label}). ستظهر القيم والتحليل الطبي هنا تلقائياً فور اعتمادها من المعمل.'
+                    : 'Sample registered with barcode (#${p.barcode}) — Status: ${stMeta.label}. Quantitative results will appear here once verified by the lab.',
+                style: AppTypography.bodySm.copyWith(color: cs.onSurfaceVariant),
               ),
             ),
+          ] else ...[
+            InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: p.hasAbnormal ? cs.errorContainer : cs.tertiaryContainer.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(_expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                      size: 16,
+                      color: p.hasAbnormal ? cs.onErrorContainer : cs.onTertiaryContainer),
+                  const SizedBox(width: 4),
+                  Text(
+                    p.hasAbnormal
+                        ? (isAr
+                            ? '${p.rows.where((r) => r.flag != ResultFlag.normal).length} خارج النطاق الطبيعي'
+                            : '${p.rows.where((r) => r.flag != ResultFlag.normal).length} out of normal range')
+                        : (isAr ? 'كل المؤشرات طبيعية' : 'All indicators normal'),
+                    style: AppTypography.labelMd.copyWith(
+                        color: p.hasAbnormal ? cs.onErrorContainer : cs.onTertiaryContainer),
+                  ),
+                ]),
+              ),
+            ),
+            if (_expanded) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration:
+                    BoxDecoration(color: cs.surfaceContainerLow, borderRadius: BorderRadius.circular(10)),
+                child: Column(
+                  children: [
+                    for (final row in p.rows) ...[
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Text('${row.value} ${row.unit}',
+                              style: AppTypography.headlineSm.copyWith(
+                                  color: _flagColor(row.flag, cs), fontWeight: FontWeight.w700)),
+                          const Spacer(),
+                          Expanded(
+                            flex: 2,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(row.analyte.pick(widget.locale),
+                                    textAlign: TextAlign.right,
+                                    style: AppTypography.bodySm.copyWith(color: cs.onSurface)),
+                                Text('${row.refLow}–${row.refHigh} ${row.unit}',
+                                    style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (row != p.rows.last)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Divider(height: 1, color: cs.outlineVariant.withOpacity(0.4)),
+                        ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: TextButton.icon(
+                  onPressed: () => _showSmartLabExplainer(context, p, isAr, widget.locale, cs),
+                  icon: Icon(Icons.auto_awesome_rounded, size: 16, color: cs.primary),
+                  label: Text(
+                    isAr ? 'تفسير النتيجة طبياً' : 'Smart Lab Explainer',
+                    style: AppTypography.labelMd.copyWith(color: cs.primary),
+                  ),
+                  style: TextButton.styleFrom(
+                    backgroundColor: cs.primaryContainer.withOpacity(0.35),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+            ],
           ],
         ],
       ),
     );
+  }
+
+  void _showSmartLabExplainer(
+    BuildContext context,
+    LabResultPanel panel,
+    bool isAr,
+    Locale locale,
+    ColorScheme cs,
+  ) {
+    final abnormalRows = panel.rows.where((r) => r.flag != ResultFlag.normal).toList();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: cs.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) => Directionality(
+        textDirection: isAr ? TextDirection.rtl : TextDirection.ltr,
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.62,
+          maxChildSize: 0.88,
+          minChildSize: 0.4,
+          builder: (_, ctrl) => ListView(
+            controller: ctrl,
+            padding: const EdgeInsets.all(20),
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: cs.primaryContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(Icons.auto_awesome_rounded, color: cs.primary),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isAr ? 'المفسّر الطبي الذكي للتحاليل' : 'Smart Medical Lab Explainer',
+                          style: AppTypography.headlineSm.copyWith(color: cs.primary),
+                        ),
+                        Text(
+                          panel.panel.pick(locale),
+                          style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: abnormalRows.isEmpty
+                      ? cs.tertiaryContainer.withOpacity(0.35)
+                      : cs.errorContainer.withOpacity(0.35),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  abnormalRows.isEmpty
+                      ? (isAr
+                          ? 'جميع المؤشرات في هذا التحليل تقع داخل النطاق المرجعي الطبيعي الآمن. استمر في المتابعة الدورية مع طبيبك.'
+                          : 'All analytes in this panel are within normal reference limits. Continue routine follow-up with your physician.')
+                      : (isAr
+                          ? 'يوجد ${abnormalRows.length} مؤشر(ات) خارج النطاق المرجعي. راجع التفاصيل المبسطة أدناه واستشر طبيبك المعالج لتقييم الحالة.'
+                          : '${abnormalRows.length} analyte(s) fall outside normal reference ranges. Review the plain-language breakdown below and follow up with your doctor.'),
+                  style: AppTypography.bodySm.copyWith(color: cs.onSurface),
+                ),
+              ),
+              const SizedBox(height: 14),
+              for (final r in panel.rows) ...[
+                Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: r.flag == ResultFlag.normal
+                          ? cs.outlineVariant.withOpacity(0.4)
+                          : cs.error.withOpacity(0.4),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              r.analyte.pick(locale),
+                              style: AppTypography.labelLg.copyWith(color: cs.onSurface),
+                            ),
+                          ),
+                          Text(
+                            '${r.value} ${r.unit}',
+                            style: AppTypography.headlineSm.copyWith(color: _flagColor(r.flag, cs)),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _explainFlag(r, isAr),
+                        style: AppTypography.bodySm.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _explainFlag(LabResultRow r, bool isAr) {
+    final range = '${r.refLow}–${r.refHigh} ${r.unit}';
+    switch (r.flag) {
+      case ResultFlag.normal:
+        return isAr
+            ? 'النتيجة طبيعية ومتزنة ضمن المعدل المرجعي ($range).'
+            : 'Result is within the healthy reference range ($range).';
+      case ResultFlag.low:
+        return isAr
+            ? 'أقل من المعدل المرجعي ($range) — يُنصح بعرض النتيجة على الطبيب لمعرفة السبب أو الحاجة لمكملات.'
+            : 'Below reference range ($range) — discuss with your doctor to evaluate potential deficiency or cause.';
+      case ResultFlag.high:
+        return isAr
+            ? 'أعلى من المعدل المرجعي ($range) — يُرجى المتابعة مع الطبيب لتفسير الارتفاع في سياق تاريخك المرضي.'
+            : 'Above reference range ($range) — please review with your physician in context of your medical history.';
+      case ResultFlag.critical:
+        return isAr
+            ? 'قيمة حرجة خارج المعدل المرجعي ($range) بفارق واضح — يجب التواصل العاجل مع الطبيب المعالج أو الطوارئ.'
+            : 'Critical deviation from reference range ($range) — prompt medical attention with your physician is advised.';
+    }
   }
 }
 

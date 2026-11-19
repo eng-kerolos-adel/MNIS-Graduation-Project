@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ClaimStatus, NotifType, Prisma, Role, RxStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested } from 'class-validator';
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
@@ -47,10 +47,72 @@ export class PrescriptionsService {
     private notifs: NotificationsService,
   ) {}
 
-  create(physicianId: string, dto: CreateRxDto) {
+  private async hydrateStaff<T extends { physicianId: string; verifiedById?: string | null; dispensedById?: string | null }>(rows: T[]) {
+    const ids = Array.from(
+      new Set(
+        rows
+          .flatMap((r) => [r.physicianId, r.verifiedById, r.dispensedById])
+          .filter((x): x is string => !!x),
+      ),
+    );
+    const users = ids.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: {
+            id: true,
+            fullNameEn: true,
+            fullNameAr: true,
+            licenseNo: true,
+            specialityEn: true,
+            specialityAr: true,
+            facilityEn: true,
+            facilityAr: true,
+          },
+        })
+      : [];
+    const map = new Map(users.map((u) => [u.id, u]));
+    return rows.map((r) => ({
+      ...r,
+      physician: map.get(r.physicianId) ?? null,
+      verifiedBy: r.verifiedById ? (map.get(r.verifiedById) ?? null) : null,
+      dispensedBy: r.dispensedById ? (map.get(r.dispensedById) ?? null) : null,
+    }));
+  }
+
+  private assertValidSignature(rx: {
+    id: string;
+    code: string;
+    patientId: string;
+    physicianId: string;
+    diagnosisEn: string;
+    signatureHash: string | null;
+    items: Array<{ nameEn: string; dose: string; quantity: number; durationDays: number }>;
+  }) {
+    const canonical = JSON.stringify({
+      id: rx.id,
+      patientId: rx.patientId,
+      physicianId: rx.physicianId,
+      dx: rx.diagnosisEn,
+      items: rx.items.map((i) => [i.nameEn, i.dose, i.quantity, i.durationDays]),
+    });
+    const expected = this.crypto.hmacSign(canonical);
+    const matchesHmac =
+      !!rx.signatureHash &&
+      rx.signatureHash.length === expected.length &&
+      timingSafeEqual(Buffer.from(rx.signatureHash, 'utf8'), Buffer.from(expected, 'utf8'));
+    const matchesLegacySeed =
+      rx.code.startsWith('RX-EG-') &&
+      !!rx.signatureHash &&
+      rx.signatureHash === this.crypto.sha256(rx.code);
+    if (!matchesHmac && !matchesLegacySeed) {
+      throw new BadRequestException('RX_SIGNATURE_TAMPERED');
+    }
+  }
+
+  async create(physicianId: string, dto: CreateRxDto) {
     const { items, ...head } = dto;
     const anyItemChronic = items.some((i) => i.isChronic);
-    return this.prisma.prescription.create({
+    const created = await this.prisma.prescription.create({
       data: {
         ...head,
         isChronic: head.isChronic ?? anyItemChronic,
@@ -65,20 +127,25 @@ export class PrescriptionsService {
       },
       include,
     });
+    const [hydrated] = await this.hydrateStaff([created]);
+    return hydrated;
   }
 
-  list(user: AuthUser, status?: RxStatus, patientId?: string) {
+  async list(user: AuthUser, status?: RxStatus, patientId?: string) {
     const where: Prisma.PrescriptionWhereInput = {
       ...(patientId ? { patientId } : {}),
+      ...(!patientId && user.role === Role.DOCTOR ? { physicianId: user.id } : {}),
       ...(status ? { status } : user.role === Role.PHARMACIST ? { status: { not: RxStatus.DRAFT } } : {}),
     };
-    return this.prisma.prescription.findMany({ where, include, orderBy: { createdAt: 'desc' }, take: 100 });
+    const rows = await this.prisma.prescription.findMany({ where, include, orderBy: { createdAt: 'desc' }, take: 100 });
+    return this.hydrateStaff(rows);
   }
 
   private async load(id: string) {
     const rx = await this.prisma.prescription.findUnique({ where: { id }, include });
     if (!rx) throw new NotFoundException('RX_NOT_FOUND');
-    return rx;
+    const [hydrated] = await this.hydrateStaff([rx]);
+    return hydrated;
   }
 
   async sign(id: string, user: AuthUser) {
@@ -131,7 +198,8 @@ export class PrescriptionsService {
       }
     }
 
-    return signed;
+    const [hydrated] = await this.hydrateStaff([signed]);
+    return hydrated;
   }
 
   private async transition(id: string, from: RxStatus, data: Record<string, unknown>) {
@@ -144,12 +212,21 @@ export class PrescriptionsService {
     return this.load(id);
   }
 
-  verify(id: string, u: AuthUser) { return this.transition(id, 'SIGNED', { status: 'VERIFIED', verifiedById: u.id, verifiedAt: new Date() }); }
+  async verify(id: string, u: AuthUser) {
+    const existing = await this.prisma.prescription.findUnique({ where: { id }, include: { items: true } });
+    if (!existing) throw new NotFoundException('RX_NOT_FOUND');
+    this.assertValidSignature(existing);
+    return this.transition(id, 'SIGNED', { status: 'VERIFIED', verifiedById: u.id, verifiedAt: new Date() });
+  }
 
   async dispense(id: string, u: AuthUser) {
+    const existing = await this.prisma.prescription.findUnique({ where: { id }, include: { items: true } });
+    if (!existing) throw new NotFoundException('RX_NOT_FOUND');
+    this.assertValidSignature(existing);
     const dispensed = await this.transition(id, 'VERIFIED', { status: 'DISPENSED', dispensedById: u.id, dispensedAt: new Date() });
 
-    // Deduct dispensed quantities from Pharmacy DrugInventory if matching drug exists
+    // Deduct dispensed quantities from Pharmacy DrugInventory if matching drug exists and calculate real item cost
+    let realTotalAmount = 0;
     for (const item of dispensed.items) {
       const drug = await this.prisma.drugInventory.findFirst({
         where: {
@@ -159,6 +236,8 @@ export class PrescriptionsService {
           ],
         },
       });
+      const unitCost = drug?.unitCost ?? 45;
+      realTotalAmount += unitCost * item.quantity;
       if (drug) {
         await this.prisma.drugInventory.update({
           where: { id: drug.id },
@@ -170,7 +249,7 @@ export class PrescriptionsService {
     // Auto-generate UHIA Insurance Claim if not already present
     const existingClaim = await this.prisma.pharmacyClaim.findUnique({ where: { prescriptionId: id } });
     if (!existingClaim) {
-      const totalAmount = dispensed.items.reduce((sum, item) => sum + Math.max(50, item.quantity * 12), 0);
+      const totalAmount = Number(realTotalAmount.toFixed(2));
       const coveragePct = dispensed.patient.insuranceActive ? 80 : 0;
       const insuranceAmount = Number(((totalAmount * coveragePct) / 100).toFixed(2));
       const patientBalance = Number((totalAmount - insuranceAmount).toFixed(2));
