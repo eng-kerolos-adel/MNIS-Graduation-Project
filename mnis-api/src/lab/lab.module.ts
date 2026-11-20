@@ -215,10 +215,21 @@ export class LabService {
 
     const verified = await this.prisma.labSample.findUnique({ where: { id }, include });
     if (verified) {
-      await this.prisma.appointment.updateMany({
-        where: { patientId: verified.patientId, type: 'LAB', status: 'CONFIRMED' },
-        data: { status: 'COMPLETED' },
-      });
+      const matchedLabAppt =
+        (await this.prisma.appointment.findFirst({
+          where: { patientId: verified.patientId, type: 'LAB', status: 'CONFIRMED', testPanel: verified.panelEn },
+          orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'asc' }],
+        })) ??
+        (await this.prisma.appointment.findFirst({
+          where: { patientId: verified.patientId, type: 'LAB', status: 'CONFIRMED' },
+          orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'asc' }],
+        }));
+      if (matchedLabAppt) {
+        await this.prisma.appointment.update({
+          where: { id: matchedLabAppt.id },
+          data: { status: 'COMPLETED' },
+        });
+      }
       if (verified.referralId) {
         await this.prisma.referral.updateMany({
           where: { id: verified.referralId, status: { in: ['PENDING', 'ACCEPTED'] } },
@@ -291,54 +302,64 @@ export class LabService {
   }
 
   async reviewConditionFlag(id: string, dto: ReviewConditionFlagDto, reviewerId: string) {
-    const flag = await this.prisma.conditionFlag.findUnique({ where: { id } });
-    if (!flag) throw new NotFoundException('FLAG_NOT_FOUND');
+    const { updated, flag } = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.conditionFlag.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundException('FLAG_NOT_FOUND');
 
-    const updated = await this.prisma.conditionFlag.update({
-      where: { id },
-      data: {
-        status: dto.status,
-        reviewedById: reviewerId,
-        reviewedAt: new Date(),
-        reviewNote: dto.reviewNote ?? null,
-      },
+      const claimed = await tx.conditionFlag.updateMany({
+        where: { id, status: 'PENDING' },
+        data: {
+          status: dto.status,
+          reviewedById: reviewerId,
+          reviewedAt: new Date(),
+          reviewNote: dto.reviewNote ?? null,
+        },
+      });
+      if (claimed.count === 0) throw new BadRequestException('FLAG_ALREADY_REVIEWED');
+
+      const updatedRow = await tx.conditionFlag.findUniqueOrThrow({ where: { id } });
+
+      if (dto.status === 'APPROVED') {
+        const patient = await tx.patient.findUnique({ where: { id: existing.patientId } });
+        if (patient) {
+          const parseArr = (val: unknown): Array<{ en: string; ar: string }> => {
+            if (Array.isArray(val)) return val as Array<{ en: string; ar: string }>;
+            if (typeof val === 'string') {
+              try { return JSON.parse(val); } catch { return []; }
+            }
+            return [];
+          };
+          if (existing.conditionType === 'ALLERGY') {
+            const arr = parseArr(patient.allergies);
+            if (!arr.some((x) => x.en?.toLowerCase() === existing.conditionEn.toLowerCase())) {
+              arr.push({ en: existing.conditionEn, ar: existing.conditionAr });
+              await tx.patient.update({ where: { id: patient.id }, data: { allergies: arr as never } });
+            }
+          } else {
+            const arr = parseArr(patient.chronicConditions);
+            if (!arr.some((x) => x.en?.toLowerCase() === existing.conditionEn.toLowerCase())) {
+              arr.push({ en: existing.conditionEn, ar: existing.conditionAr });
+              await tx.patient.update({ where: { id: patient.id }, data: { chronicConditions: arr as never } });
+            }
+          }
+        }
+      }
+
+      return { updated: updatedRow, flag: existing };
     });
 
     if (dto.status === 'APPROVED') {
-      const patient = await this.prisma.patient.findUnique({ where: { id: flag.patientId } });
-      if (patient) {
-        const parseArr = (val: unknown): Array<{ en: string; ar: string }> => {
-          if (Array.isArray(val)) return val as Array<{ en: string; ar: string }>;
-          if (typeof val === 'string') {
-            try { return JSON.parse(val); } catch { return []; }
-          }
-          return [];
-        };
-        if (flag.conditionType === 'ALLERGY') {
-          const arr = parseArr(patient.allergies);
-          if (!arr.some((x) => x.en?.toLowerCase() === flag.conditionEn.toLowerCase())) {
-            arr.push({ en: flag.conditionEn, ar: flag.conditionAr });
-            await this.prisma.patient.update({ where: { id: patient.id }, data: { allergies: arr as never } });
-          }
-        } else {
-          const arr = parseArr(patient.chronicConditions);
-          if (!arr.some((x) => x.en?.toLowerCase() === flag.conditionEn.toLowerCase())) {
-            arr.push({ en: flag.conditionEn, ar: flag.conditionAr });
-            await this.prisma.patient.update({ where: { id: patient.id }, data: { chronicConditions: arr as never } });
-          }
-        }
-        const citizenUser = await this.prisma.user.findUnique({ where: { patientId: patient.id }, select: { id: true } });
-        if (citizenUser) {
-          await this.notifs.sendToUser(
-            citizenUser.id,
-            NotifType.LAB_RESULT_READY,
-            'Medical Profile Updated',
-            'تم تحديث ملفك الطبي وإضافة تنبيه صحي معتمد من الطبيب',
-            `${flag.conditionEn} was approved by your physician and added to your medical profile & emergency card.`,
-            `تم اعتماد وإضافة (${flag.conditionAr}) إلى ملفك الطبي وبطاقة الطوارئ الخاصة بك.`,
-            { conditionFlagId: flag.id },
-          );
-        }
+      const citizenUser = await this.prisma.user.findUnique({ where: { patientId: flag.patientId }, select: { id: true } });
+      if (citizenUser) {
+        await this.notifs.sendToUser(
+          citizenUser.id,
+          NotifType.LAB_RESULT_READY,
+          'Medical Profile Updated',
+          'تم تحديث ملفك الطبي وإضافة تنبيه صحي معتمد من الطبيب',
+          `${flag.conditionEn} was approved by your physician and added to your medical profile & emergency card.`,
+          `تم اعتماد وإضافة (${flag.conditionAr}) إلى ملفك الطبي وبطاقة الطوارئ الخاصة بك.`,
+          { conditionFlagId: flag.id },
+        ).catch(() => undefined);
       }
     }
 

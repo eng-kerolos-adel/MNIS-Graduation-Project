@@ -136,7 +136,8 @@ export class AnalyticsService {
       _count: { id: true },
       where: {
         prescription: {
-          createdAt: { gte: thirtyDaysAgo }
+          status: 'DISPENSED',
+          dispensedAt: { gte: thirtyDaysAgo }
         }
       },
       having: {
@@ -145,7 +146,7 @@ export class AnalyticsService {
     });
 
     const recentRx = await this.prisma.prescription.findMany({
-      where: { createdAt: { gte: fourteenDaysAgo } },
+      where: { createdAt: { gte: fourteenDaysAgo }, status: { notIn: ['DRAFT', 'REJECTED'] } },
       include: { patient: { select: { mti: true, fullNameEn: true, fullNameAr: true } } }
     });
 
@@ -161,12 +162,12 @@ export class AnalyticsService {
     }
 
     const multiDoctorPrescriptions = Array.from(patientStats.entries())
-      .filter(([_, stats]) => stats.rxCount >= 2)
+      .filter(([_, stats]) => stats.doctors.size >= 2)
       .map(([patientId, stats]) => ({
         patientId,
         rxCount: stats.rxCount,
-        uniqueDoctors: Math.max(2, stats.doctors.size),
-        doctorCount: Math.max(2, stats.doctors.size),
+        uniqueDoctors: stats.doctors.size,
+        doctorCount: stats.doctors.size,
       }));
 
     const rapidRefills = await this.prisma.renewalRequest.findMany({
@@ -179,11 +180,15 @@ export class AnalyticsService {
       }
     });
 
-    const flaggedRefills = rapidRefills.map(r => ({
-      id: `${r.prescription.code} (${r.patient.mti})`,
-      renewalId: r.id,
-      patientId: r.prescription.patientId,
-    }));
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    const flaggedRefills = rapidRefills
+      .filter((r) => r.createdAt.getTime() - r.prescription.createdAt.getTime() <= SEVEN_DAYS_MS)
+      .map((r) => ({
+        id: `${r.prescription.code} (${r.patient.mti})`,
+        renewalId: r.id,
+        patientId: r.prescription.patientId,
+        daysSinceIssued: Math.max(0, Math.round((r.createdAt.getTime() - r.prescription.createdAt.getTime()) / 86_400_000)),
+      }));
 
     return {
       repeatedDispensing: dispensedItems.map(d => ({ nameEn: d.nameEn, nameAr: d.nameAr, count: d._count.id })),

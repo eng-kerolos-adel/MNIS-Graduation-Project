@@ -169,6 +169,15 @@ class MnisRepository {
   // ── Sovereign Summary Hub (Referrals, Radiology, Chronic, Access Log)
   Future<Map<String, dynamic>> summaryHub() async =>
       _api.get('/me/summary-hub', _asMap);
+
+  // ── Notifications ─────────────────────────────────────────────────────
+  Future<List<AppNotification>> notifications() async =>
+      (await _api.get('/notifications', _asList))
+          .map(AppNotification.fromJson)
+          .toList();
+
+  Future<void> markNotificationRead(String id) =>
+      _api.patch('/notifications/$id/read', {}, (_) => null);
 }
 
 

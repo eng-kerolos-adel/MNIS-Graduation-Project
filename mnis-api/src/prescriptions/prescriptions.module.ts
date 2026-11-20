@@ -285,7 +285,44 @@ export class PrescriptionsService {
     return dispensed;
   }
 
-  reject(id: string, reason: string, u: AuthUser) { return this.transition(id, 'SIGNED', { status: 'REJECTED', rejectReason: reason, verifiedById: u.id, verifiedAt: new Date() }); }
+  async reject(id: string, reason: string, u: AuthUser) {
+    const rejected = await this.transition(id, 'SIGNED', {
+      status: 'REJECTED',
+      rejectReason: reason,
+      verifiedById: u.id,
+      verifiedAt: new Date(),
+    });
+    const citizenUser = await this.prisma.user.findUnique({
+      where: { patientId: rejected.patientId },
+      select: { id: true },
+    });
+    const notifyTargets: Promise<unknown>[] = [
+      this.notifs.sendToUser(
+        rejected.physicianId,
+        NotifType.GENERAL,
+        'Prescription Rejected by Pharmacy',
+        'رفضت الصيدلية صرف روشتة صادرة منك',
+        `Prescription #${rejected.code} was rejected by the pharmacy: ${reason}.`,
+        `تم رفض صرف الروشتة رقم #${rejected.code} بواسطة الصيدلية: ${reason}.`,
+        { prescriptionId: rejected.id, code: rejected.code, reason },
+      ),
+    ];
+    if (citizenUser) {
+      notifyTargets.push(
+        this.notifs.sendToUser(
+          citizenUser.id,
+          NotifType.GENERAL,
+          'Prescription Rejected by Pharmacy',
+          'تم رفض صرف الروشتة بالصيدلية',
+          `Your prescription #${rejected.code} was rejected by the pharmacy (${reason}). Please contact your physician.`,
+          `تم رفض صرف الروشتة رقم #${rejected.code} من الصيدلية (${reason}). يرجى مراجعة الطبيب المعالج.`,
+          { prescriptionId: rejected.id, code: rejected.code, reason },
+        ),
+      );
+    }
+    await Promise.all(notifyTargets).catch(() => undefined);
+    return rejected;
+  }
 }
 
 @ApiTags('prescriptions') @ApiBearerAuth() @Audit('PRESCRIPTION')

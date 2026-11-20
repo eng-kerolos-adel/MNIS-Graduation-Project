@@ -4,7 +4,7 @@ import { Role } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Length, MaxLength, ValidateIf } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
-import { Audit, Roles } from '../common/decorators';
+import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
 import { generateTempPassword } from '../common/password.util';
 
 const STAFF_ROLES = ['DOCTOR', 'PHARMACIST', 'LAB_TECH', 'HOSPITAL_STAFF', 'EXECUTIVE', 'RECEPTIONIST', 'ADMIN'] as const;
@@ -85,7 +85,10 @@ export class AdminService {
     return { user, temporaryPassword: temp };
   }
 
-  async setActive(id: string, isActive: boolean) {
+  async setActive(id: string, isActive: boolean, actorId?: string) {
+    if (actorId && id === actorId && !isActive) {
+      throw new BadRequestException('CANNOT_DEACTIVATE_SELF');
+    }
     const u = await this.prisma.user.findUnique({ where: { id } });
     if (!u || u.role === Role.PATIENT) throw new NotFoundException();
     const [user] = await this.prisma.$transaction([
@@ -517,7 +520,7 @@ export class AdminController {
   @Get('audit-logs') auditLogs() { return this.svc.getAuditLogs(); }
   @Get('security-posture') securityPosture() { return this.svc.getSecurityPosture(); }
   @Post() @Roles(Role.ADMIN) create(@Body() dto: CreateStaffDto) { return this.svc.create(dto); }
-  @Patch(':id/active') @Roles(Role.ADMIN) setActive(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ActiveDto) { return this.svc.setActive(id, dto.isActive); }
+  @Patch(':id/active') @Roles(Role.ADMIN) setActive(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ActiveDto, @CurrentUser() u: AuthUser) { return this.svc.setActive(id, dto.isActive, u.id); }
   @Post(':id/reset-password') @Roles(Role.ADMIN) reset(@Param('id', ParseUUIDPipe) id: string) { return this.svc.resetPassword(id); }
 }
 

@@ -5,6 +5,7 @@ import {
   Post,
   Delete,
   Param,
+  ParseUUIDPipe,
   Body,
   Injectable,
   Module,
@@ -138,7 +139,7 @@ export class MeService {
   async getPrescriptions(userId: string) {
     const patientId = await this.getPatientId(userId);
     const rows = await this.prisma.prescription.findMany({
-      where: { patientId },
+      where: { patientId, status: { not: 'DRAFT' } },
       include: { items: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -156,6 +157,7 @@ export class MeService {
     const map = await this.getUsersMap(rows.flatMap((s) => [s.orderedById, s.verifiedById]));
     return rows.map((s) => ({
       ...s,
+      results: s.status === 'VERIFIED' ? s.results : [],
       orderedBy: map.get(s.orderedById) ?? null,
       verifiedBy: s.verifiedById ? (map.get(s.verifiedById) ?? null) : null,
     }));
@@ -191,7 +193,12 @@ export class MeService {
     }
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
-    if (pDate < startOfToday) throw new BadRequestException('Preferred date must be today or in the future');
+    if (pDate < startOfToday) throw new BadRequestException('DATE_IN_PAST');
+
+    const openCount = await this.prisma.appointment.count({
+      where: { patientId, status: 'REQUESTED' },
+    });
+    if (openCount >= 10) throw new BadRequestException('TOO_MANY_OPEN_REQUESTS');
 
     let providerId: string | undefined;
     if (dto.type === 'CLINIC') {
@@ -307,12 +314,21 @@ export class MeService {
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
     if (!allowedTypes.includes(dto.mimeType)) throw new BadRequestException('Invalid file type');
 
+    const docCount = await this.prisma.document.count({ where: { patientId } });
+    if (docCount >= 50) throw new BadRequestException('DOCUMENT_LIMIT_REACHED');
+
+    const cleanedB64 = dto.fileBase64.replace(/^data:[^;]+;base64,/, '');
+    const actualBytes = Buffer.from(cleanedB64, 'base64').length;
+    if (actualBytes < 1 || actualBytes > 5_000_000) {
+      throw new BadRequestException('FILE_SIZE_INVALID');
+    }
+
     return this.prisma.document.create({
       data: {
         patientId,
         label: dto.label,
         mimeType: dto.mimeType,
-        fileSizeBytes: dto.fileSizeBytes,
+        fileSizeBytes: actualBytes,
         fileBase64: dto.fileBase64,
         status: 'PENDING_REVIEW'
       }
@@ -374,6 +390,22 @@ export class MeService {
 
   async getSummaryHub(userId: string) {
     const patientId = await this.getPatientId(userId);
+    const [rxIds, sampleIds, refIds, cardIds, docIds] = await Promise.all([
+      this.prisma.prescription.findMany({ where: { patientId }, select: { id: true } }),
+      this.prisma.labSample.findMany({ where: { patientId }, select: { id: true } }),
+      this.prisma.referral.findMany({ where: { patientId }, select: { id: true } }),
+      this.prisma.nfcCard.findMany({ where: { patientId }, select: { id: true } }),
+      this.prisma.document.findMany({ where: { patientId }, select: { id: true } }),
+    ]);
+    const ownedResourceIds = [
+      patientId,
+      ...rxIds.map((x) => x.id),
+      ...sampleIds.map((x) => x.id),
+      ...refIds.map((x) => x.id),
+      ...cardIds.map((x) => x.id),
+      ...docIds.map((x) => x.id),
+    ];
+
     const [referrals, radiology, chronicAllowances, recentAudits, activeVisit, activeBed, orCases] = await Promise.all([
       this.prisma.referral.findMany({
         where: { patientId },
@@ -395,8 +427,10 @@ export class MeService {
       }),
       this.prisma.auditLog.findMany({
         where: {
-          resourceType: { in: ['PATIENT', 'PRESCRIPTION', 'LAB_SAMPLE', 'REFERRAL', 'NFC_CARD', 'BREAK_GLASS_NFC'] },
+          resourceType: { in: ['PATIENT', 'PRESCRIPTION', 'LAB_SAMPLE', 'REFERRAL', 'NFC_CARD', 'BREAK_GLASS_NFC', 'SHARED_RECORD'] },
+          resourceId: { in: ownedResourceIds },
           statusCode: { lt: 400 },
+          OR: [{ userId: null }, { userId: { not: userId } }],
         },
         include: {
           user: { select: { fullNameEn: true, fullNameAr: true, role: true, facilityEn: true, facilityAr: true } },
@@ -430,7 +464,15 @@ export class MeService {
           ? await this.prisma.visit.count({
               where: {
                 status: 'WAITING',
-                arrivedAt: { lt: activeVisit.arrivedAt },
+                ...(activeVisit.doctorId ? { doctorId: activeVisit.doctorId } : {}),
+                ...(activeVisit.isEmergency
+                  ? { isEmergency: true, arrivedAt: { lt: activeVisit.arrivedAt } }
+                  : {
+                      OR: [
+                        { isEmergency: true },
+                        { isEmergency: false, arrivedAt: { lt: activeVisit.arrivedAt } },
+                      ],
+                    }),
               },
             })
           : 0;
@@ -570,7 +612,7 @@ export class MeController {
   }
 
   @Delete('appointments/:id')
-  cancelAppointment(@Param('id') id: string, @CurrentUser() user: AuthUser) { 
+  cancelAppointment(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) { 
     return this.svc.cancelAppointment(user.id, id); 
   }
 
@@ -589,7 +631,7 @@ export class MeController {
   getDocuments(@CurrentUser() user: AuthUser) { return this.svc.getDocuments(user.id); }
 
   @Get('documents/:id')
-  getDocumentFile(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+  getDocumentFile(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.svc.getDocumentFile(user.id, id);
   }
 

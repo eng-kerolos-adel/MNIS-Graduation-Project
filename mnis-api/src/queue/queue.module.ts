@@ -154,15 +154,21 @@ export class QueueService {
     });
 
     if (dto.status === VisitStatus.COMPLETED) {
-      await this.prisma.appointment.updateMany({
+      const matchedAppt = await this.prisma.appointment.findFirst({
         where: {
           patientId: v.patientId,
           type: 'CLINIC',
           status: 'CONFIRMED',
           ...(resolvedDocId ? { doctorId: resolvedDocId } : {}),
         },
-        data: { status: 'COMPLETED' },
+        orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'asc' }],
       });
+      if (matchedAppt) {
+        await this.prisma.appointment.update({
+          where: { id: matchedAppt.id },
+          data: { status: 'COMPLETED' },
+        });
+      }
     }
 
     const [hydrated] = await this.hydrateVisits([updated]);

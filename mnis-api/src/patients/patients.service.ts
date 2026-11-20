@@ -31,7 +31,7 @@ export class PatientsService {
     private notifs: NotificationsService,
   ) {}
 
-  async search(q?: string) {
+  async search(q?: string, role?: Role) {
     const term = q?.trim();
     if (!term) {
       return this.prisma.patient.findMany({
@@ -62,7 +62,8 @@ export class PatientsService {
       return direct;
     }
 
-    // Fallback for partial National ID search (e.g. typing 4-13 digits of the 14-digit National ID)
+    // Fallback for partial National ID search (restricted roles can only search the visible last 4 digits)
+    const restricted = role === Role.LAB_TECH || role === Role.PHARMACIST;
     const allRecent = await this.prisma.patient.findMany({
       take: 200,
       orderBy: { createdAt: 'desc' },
@@ -71,7 +72,8 @@ export class PatientsService {
     return allRecent.filter((p) => {
       try {
         const nid = this.crypto.decrypt(p.nationalIdEnc);
-        return nid.includes(term) || p.mti.toLowerCase().includes(term.toLowerCase());
+        const nidMatch = restricted ? nid.slice(-4).includes(term) : nid.includes(term);
+        return nidMatch || p.mti.toLowerCase().includes(term.toLowerCase());
       } catch {
         return false;
       }

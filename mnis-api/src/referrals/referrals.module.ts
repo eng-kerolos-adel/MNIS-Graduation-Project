@@ -9,6 +9,7 @@ import {
   Module,
   NotFoundException,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
 } from '@nestjs/common';
@@ -39,6 +40,7 @@ import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
 import { PATIENT_PUBLIC_SELECT } from '../patients/patient.select';
 import { PrismaModule } from '../prisma/prisma.module';
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 export class CreateReferralDto {
   @IsUUID()
@@ -137,7 +139,10 @@ const referralInclude = {
 
 @Injectable()
 export class ReferralsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifs: NotificationsService,
+  ) {}
 
   private mapReferral(r: any) {
     return {
@@ -257,17 +262,15 @@ export class ReferralsService {
     });
     if (citizenUser) {
       const tAr = target === ReferralTarget.HOSPITAL ? 'المستشفى' : target === ReferralTarget.LAB ? 'المعمل المركزي' : 'الصيدلية';
-      await this.prisma.pushNotification.create({
-        data: {
-          userId: citizenUser.id,
-          type: NotifType.REFERRAL_UPDATED,
-          titleEn: 'New Medical Referral Issued',
-          titleAr: 'تم إصدار تحويل طبي جديد في ملفك',
-          bodyEn: `You have been referred to ${target} (${reasonEn}).`,
-          bodyAr: `تم إصدار تحويل طبي لك إلى ${tAr} (${reasonAr}).`,
-          data: { referralId: res.id, target, urgency: dto.urgency },
-        },
-      }).catch(() => undefined);
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.REFERRAL_UPDATED,
+        'New Medical Referral Issued',
+        'تم إصدار تحويل طبي جديد في ملفك',
+        `You have been referred to ${target} (${reasonEn}).`,
+        `تم إصدار تحويل طبي لك إلى ${tAr} (${reasonAr}).`,
+        { referralId: res.id, target, urgency: dto.urgency },
+      ).catch(() => undefined);
     }
 
     return this.mapReferral(res);
@@ -372,7 +375,7 @@ export class ReferralsService {
 
     const notifContent = this.buildNotifContent(dto.status, referral);
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       let erCaseId: string | undefined;
       if (referral.target === ReferralTarget.HOSPITAL && dto.status === ReferralStatus.ACCEPTED && !referral.erCaseId) {
         const erCase = await tx.erCase.create({
@@ -392,7 +395,7 @@ export class ReferralsService {
         erCaseId = erCase.id;
       }
 
-      const updated = await tx.referral.update({
+      return tx.referral.update({
         where: { id },
         data: {
           status: dto.status,
@@ -404,55 +407,51 @@ export class ReferralsService {
         },
         include: referralInclude,
       });
-
-      await tx.pushNotification.create({
-        data: {
-          userId: referral.senderId,
-          type: NotifType.REFERRAL_UPDATED,
-          titleEn: notifContent.titleEn,
-          titleAr: notifContent.titleAr,
-          bodyEn: notifContent.bodyEn,
-          bodyAr: notifContent.bodyAr,
-          data: {
-            referralId: referral.id,
-            patientId: referral.patientId,
-            newStatus: dto.status,
-            target: referral.target,
-            responseNoteEn: dto.responseNoteEn ?? null,
-            responseNoteAr: dto.responseNoteAr ?? null,
-          },
-        },
-      });
-
-      const citizenUser = await tx.user.findUnique({
-        where: { patientId: referral.patientId },
-        select: { id: true },
-      });
-      if (citizenUser) {
-        const statusAr = dto.status === ReferralStatus.COMPLETED ? 'اكتمل تنفيذ' : dto.status === ReferralStatus.ACCEPTED ? 'تم قبول' : 'تحديث بخصوص';
-        await tx.pushNotification.create({
-          data: {
-            userId: citizenUser.id,
-            type: NotifType.REFERRAL_UPDATED,
-            titleEn: notifContent.titleEn,
-            titleAr: notifContent.titleAr,
-            bodyEn: `Your medical referral to ${referral.target} status changed to ${dto.status}.`,
-            bodyAr: `${statusAr} طلب التحويل الطبي الخاص بك (${referral.reasonAr}).`,
-            data: { referralId: referral.id, newStatus: dto.status, target: referral.target },
-          },
-        });
-      }
-
-      return updated;
     });
+
+    await this.notifs.sendToUser(
+      referral.senderId,
+      NotifType.REFERRAL_UPDATED,
+      notifContent.titleEn,
+      notifContent.titleAr,
+      notifContent.bodyEn,
+      notifContent.bodyAr,
+      {
+        referralId: referral.id,
+        patientId: referral.patientId,
+        newStatus: dto.status,
+        target: referral.target,
+        responseNoteEn: dto.responseNoteEn ?? null,
+        responseNoteAr: dto.responseNoteAr ?? null,
+      },
+    ).catch(() => undefined);
+
+    const citizenUser = await this.prisma.user.findUnique({
+      where: { patientId: referral.patientId },
+      select: { id: true },
+    });
+    if (citizenUser) {
+      const statusAr = dto.status === ReferralStatus.COMPLETED ? 'اكتمل تنفيذ' : dto.status === ReferralStatus.ACCEPTED ? 'تم قبول' : 'تحديث بخصوص';
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.REFERRAL_UPDATED,
+        notifContent.titleEn,
+        notifContent.titleAr,
+        `Your medical referral to ${referral.target} status changed to ${dto.status}.`,
+        `${statusAr} طلب التحويل الطبي الخاص بك (${referral.reasonAr}).`,
+        { referralId: referral.id, newStatus: dto.status, target: referral.target },
+      ).catch(() => undefined);
+    }
+
+    return updated;
   }
 
-  async cancel(id: string, senderId: string) {
+  async cancel(id: string, user: AuthUser) {
     const referral = await this.prisma.referral.findUnique({ where: { id } });
     if (!referral) {
       throw new NotFoundException(`Referral ${id} not found`);
     }
-    if (referral.senderId !== senderId) {
+    if (referral.senderId !== user.id && user.role !== Role.ADMIN) {
       throw new ForbiddenException('You can only cancel your own referrals');
     }
     if (referral.status !== ReferralStatus.PENDING) {
@@ -557,7 +556,7 @@ export class ReferralsController {
   })
   @ApiParam({ name: 'id', description: 'Referral UUID' })
   act(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ActOnReferralDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -571,15 +570,15 @@ export class ReferralsController {
   })
   @ApiParam({ name: 'id', description: 'Referral UUID' })
   cancel(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.referralsService.cancel(id, user.id);
+    return this.referralsService.cancel(id, user);
   }
 }
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, NotificationsModule],
   controllers: [ReferralsController],
   providers: [ReferralsService],
   exports: [ReferralsService],

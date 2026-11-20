@@ -1,6 +1,8 @@
 import {
   Controller,
   Get,
+  NotFoundException,
+  ParseUUIDPipe,
   Post,
   Patch,
   Param,
@@ -37,6 +39,16 @@ export class CreateInstrumentDto {
   @IsOptional()
   @IsNumber()
   calibIntervalDays?: number;
+}
+
+export class UpdateInstrumentDto {
+  @IsOptional() @IsString() nameEn?: string;
+  @IsOptional() @IsString() nameAr?: string;
+  @IsOptional() @IsString() serialNo?: string;
+  @IsOptional() @IsString() locationEn?: string;
+  @IsOptional() @IsString() locationAr?: string;
+  @IsOptional() @IsNumber() calibIntervalDays?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 export class CreateCalibrationDto {
@@ -82,7 +94,7 @@ export class QcService {
     });
   }
 
-  async createInstrument(dto: CreateInstrumentDto) {
+  async createInstrument(dto: CreateInstrumentDto, userId: string) {
     const { code, model, serialNo, locationEn, locationAr, ...rest } = dto;
     const inst = await this.prisma.labInstrument.create({
       data: {
@@ -97,7 +109,7 @@ export class QcService {
     await this.prisma.calibrationRecord.create({
       data: {
         instrumentId: inst.id,
-        performedById: 'SYSTEM',
+        performedById: userId,
         nextDueAt: nextDue,
         result: 'PASS',
         notes: 'Initial factory & installation QC verification passed',
@@ -106,7 +118,7 @@ export class QcService {
     return inst;
   }
 
-  async updateInstrument(id: string, data: Partial<CreateInstrumentDto> & { isActive?: boolean }) {
+  async updateInstrument(id: string, data: UpdateInstrumentDto) {
     return this.prisma.labInstrument.update({
       where: { id },
       data
@@ -122,7 +134,7 @@ export class QcService {
 
   async addCalibration(instrumentId: string, dto: CreateCalibrationDto, userId: string) {
     const inst = await this.prisma.labInstrument.findUnique({ where: { id: instrumentId } });
-    if (!inst) throw new Error('Instrument not found');
+    if (!inst) throw new NotFoundException('INSTRUMENT_NOT_FOUND');
 
     const nextDue = new Date();
     nextDue.setDate(nextDue.getDate() + inst.calibIntervalDays);
@@ -152,16 +164,16 @@ export class QcController {
   list() { return this.svc.listInstruments(); }
 
   @Post()
-  create(@Body() dto: CreateInstrumentDto) { return this.svc.createInstrument(dto); }
+  create(@Body() dto: CreateInstrumentDto, @CurrentUser() user: AuthUser) { return this.svc.createInstrument(dto, user.id); }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: any) { return this.svc.updateInstrument(id, dto); }
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateInstrumentDto) { return this.svc.updateInstrument(id, dto); }
 
   @Get(':id/calibrations')
-  getCalibrations(@Param('id') id: string) { return this.svc.getCalibrations(id); }
+  getCalibrations(@Param('id', ParseUUIDPipe) id: string) { return this.svc.getCalibrations(id); }
 
   @Post(':id/calibrations')
-  addCalibration(@Param('id') id: string, @Body() dto: CreateCalibrationDto, @CurrentUser() user: AuthUser) {
+  addCalibration(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateCalibrationDto, @CurrentUser() user: AuthUser) {
     return this.svc.addCalibration(id, dto, user.id);
   }
 }

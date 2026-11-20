@@ -1,6 +1,8 @@
 import {
   Controller,
   Get,
+  NotFoundException,
+  ParseUUIDPipe,
   Post,
   Delete,
   Param,
@@ -96,15 +98,17 @@ export class RadiologyService {
     const r = await this.prisma.radiologyUpload.findUnique({
       where: { id }
     });
-    return r ? this.mapRow(r) : null;
+    if (!r) throw new NotFoundException('RADIOLOGY_NOT_FOUND');
+    return this.mapRow(r);
   }
 
   async upload(dto: UploadRadiologyDto, uploaderId: string) {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
     if (!allowed.includes(dto.mimeType)) throw new BadRequestException('Invalid file type');
 
-    const computedBytes = dto.fileSizeBytes ?? Math.max(64, Math.ceil(dto.fileBase64.length * 0.75));
-    if (computedBytes > 5500000) throw new BadRequestException('File too large (max 5MB)');
+    const cleanedB64 = dto.fileBase64.replace(/^data:[^;]+;base64,/, '');
+    const actualBytes = Buffer.from(cleanedB64, 'base64').length;
+    if (actualBytes < 1 || actualBytes > 5_500_000) throw new BadRequestException('File too large (max 5MB)');
 
     const mod = dto.modality || 'X-Ray';
     const titleEn = dto.titleEn || `${mod} — ${dto.bodyPartEn || 'Chest PA'}`;
@@ -118,7 +122,7 @@ export class RadiologyService {
         titleEn,
         titleAr,
         mimeType: dto.mimeType,
-        fileSizeBytes: computedBytes,
+        fileSizeBytes: actualBytes,
         fileBase64: dto.fileBase64,
         notes
       }
@@ -153,13 +157,13 @@ export class RadiologyController {
   }
 
   @Get(':id')
-  getOne(@Param('id') id: string) {
+  getOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.getOne(id);
   }
 
   @Delete(':id')
   @Roles(Role.LAB_TECH, Role.ADMIN)
-  remove(@Param('id') id: string) {
+  remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.delete(id);
   }
 }

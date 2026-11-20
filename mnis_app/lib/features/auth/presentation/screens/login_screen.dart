@@ -459,6 +459,7 @@ class _GovHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isAr = l.isArabic;
     return Column(
       children: [
         Container(
@@ -490,13 +491,16 @@ class _GovHeader extends StatelessWidget {
             children: [
               Icon(Icons.account_balance_rounded, size: 14, color: cs.primary),
               const SizedBox(width: 4),
-              Text('جمهورية مصر العربية',
+              Text(isAr ? 'جمهورية مصر العربية' : 'Arab Republic of Egypt',
                   style: AppTypography.labelMd
                       .copyWith(color: cs.onSurfaceVariant)),
               const SizedBox(width: 4),
               Text('•', style: TextStyle(color: cs.outlineVariant)),
               const SizedBox(width: 4),
-              Text('الهيئة العامة للرعاية الصحية',
+              Text(
+                  isAr
+                      ? 'الهيئة العامة للرعاية الصحية'
+                      : 'General Authority for Healthcare',
                   style: AppTypography.labelMd.copyWith(
                       color: cs.primary, fontWeight: FontWeight.w700)),
             ],

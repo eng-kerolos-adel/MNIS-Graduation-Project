@@ -6,7 +6,7 @@ const schema = z.object({
   PORT: z.coerce.number().default(3001),
   DATABASE_URL: z.string().min(1),
   JWT_ACCESS_SECRET: z.string().min(32),
-  JWT_REFRESH_SECRET: z.string().min(32),
+  JWT_REFRESH_SECRET: z.string().min(32).optional(),
   RX_SIGNING_KEY: z.string().min(32),
   BLIND_INDEX_KEY: z.string().min(32),
   ENCRYPTION_KEY: z.string().min(40),

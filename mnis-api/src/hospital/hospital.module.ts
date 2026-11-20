@@ -97,11 +97,20 @@ export class HospitalService {
 
   setErStatus(id: string, status: ErStatus) { return this.prisma.erCase.update({ where: { id }, data: { status }, include: erInclude }); }
 
-  /** Atomic: the bed flip is conditional on AVAILABLE, so two nurses can never assign the same bed. */
+  /** Atomic: the bed flip is conditional on AVAILABLE, and ER case flip is conditional on not already closed, so two nurses can never assign two beds or overwrite a bed. */
   async admit(id: string, bedId: string) {
     const admitted = await this.prisma.$transaction(async (tx) => {
       const c = await tx.erCase.findUnique({ where: { id } });
       if (!c) throw new NotFoundException('ER_CASE_NOT_FOUND');
+      if (c.status === 'ADMITTED' || c.status === 'DISCHARGED') {
+        throw new BadRequestException('ER_CASE_ALREADY_CLOSED');
+      }
+      const erFlipped = await tx.erCase.updateMany({
+        where: { id, status: { notIn: ['ADMITTED', 'DISCHARGED'] } },
+        data: { status: 'ADMITTED' },
+      });
+      if (erFlipped.count === 0) throw new BadRequestException('ER_CASE_ALREADY_CLOSED');
+
       const claimed = await tx.bed.updateMany({ where: { id: bedId, status: 'AVAILABLE' }, data: { status: 'OCCUPIED', patientId: c.patientId, acuity: c.acuity, admittedAt: new Date() } });
       if (claimed.count === 0) throw new BadRequestException('BED_NOT_AVAILABLE');
       if (c.referralId) {
@@ -110,7 +119,7 @@ export class HospitalService {
           data: { status: 'COMPLETED', decidedAt: new Date() },
         });
       }
-      return tx.erCase.update({ where: { id }, data: { status: 'ADMITTED' }, include: erInclude });
+      return tx.erCase.findUniqueOrThrow({ where: { id }, include: erInclude });
     });
 
     const [bed, citizenUser] = await Promise.all([
@@ -138,11 +147,11 @@ export class HospitalService {
 export class HospitalController {
   constructor(private svc: HospitalService) {}
   @Get('beds') beds(@CurrentUser() u: AuthUser) { return this.svc.beds(u); }
-  @Patch('beds/:id/status') setBed(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BedStatusDto) { return this.svc.setBedStatus(id, dto.status); }
+  @Patch('beds/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setBed(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BedStatusDto) { return this.svc.setBedStatus(id, dto.status); }
   @Get('er') er(@CurrentUser() u: AuthUser) { return this.svc.er(u); }
-  @Post('er') intake(@Body() dto: ErIntakeDto, @CurrentUser() u: AuthUser) { return this.svc.intake(dto, u); }
-  @Patch('er/:id/status') setEr(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ErStatusDto) { return this.svc.setErStatus(id, dto.status); }
-  @Post('er/:id/admit') admit(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdmitDto) { return this.svc.admit(id, dto.bedId); }
+  @Post('er') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) intake(@Body() dto: ErIntakeDto, @CurrentUser() u: AuthUser) { return this.svc.intake(dto, u); }
+  @Patch('er/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setEr(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ErStatusDto) { return this.svc.setErStatus(id, dto.status); }
+  @Post('er/:id/admit') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) admit(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdmitDto) { return this.svc.admit(id, dto.bedId); }
 }
 
 import { BloodBankController, BloodBankService } from './blood-bank.service';

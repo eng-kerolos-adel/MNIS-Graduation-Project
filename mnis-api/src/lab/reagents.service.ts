@@ -5,6 +5,7 @@ import {
   Patch,
   Delete,
   Param,
+  ParseUUIDPipe,
   Body,
   Injectable,
 } from '@nestjs/common';
@@ -124,11 +125,14 @@ export class ReagentsController {
   listAlerts() { return this.svc.listAlerts(); }
 
   @Post()
+  @Roles(Role.LAB_TECH, Role.ADMIN)
   create(@Body() dto: CreateReagentDto) { return this.svc.create(dto); }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateReagentDto) { return this.svc.update(id, dto); }
+  @Roles(Role.LAB_TECH, Role.ADMIN)
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateReagentDto) { return this.svc.update(id, dto); }
 
   @Delete(':id')
-  remove(@Param('id') id: string) { return this.svc.remove(id); }
+  @Roles(Role.LAB_TECH, Role.ADMIN)
+  remove(@Param('id', ParseUUIDPipe) id: string) { return this.svc.remove(id); }
 }

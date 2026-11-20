@@ -10,7 +10,7 @@ import { CreatePatientDto, PatientsService } from './patients.service';
 export class PatientsController {
   constructor(private svc: PatientsService) {}
 
-  @Get() search(@Query('q') q?: string) { return this.svc.search(q?.slice(0, 100)); }
+  @Get() search(@CurrentUser() u: AuthUser, @Query('q') q?: string) { return this.svc.search(q?.slice(0, 100), u.role); }
   @Get('documents/:docId/file') @Roles(Role.DOCTOR, Role.LAB_TECH, Role.HOSPITAL_STAFF, Role.ADMIN) getDocumentFile(@Param('docId', ParseUUIDPipe) docId: string) { return this.svc.getDocumentFile(docId); }
   @Patch('documents/:docId/review') @Roles(Role.DOCTOR, Role.ADMIN) reviewDocument(@Param('docId', ParseUUIDPipe) docId: string, @CurrentUser() u: AuthUser) { return this.svc.reviewDocument(docId, u.id); }
   @Get(':id/documents') @Roles(Role.DOCTOR, Role.LAB_TECH, Role.HOSPITAL_STAFF, Role.ADMIN) listDocuments(@Param('id', ParseUUIDPipe) id: string) { return this.svc.listDocuments(id); }

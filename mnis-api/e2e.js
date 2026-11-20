@@ -12,7 +12,7 @@ async function test() {
     console.log("Users found:", !!rec, !!doc, !!pharm);
 
     // 2. See if there are patients in queue
-    const queue = await prisma.queueTicket.findMany();
+    const queue = await prisma.visit.findMany();
     console.log("Queue size:", queue.length);
 
     // 3. See if Prescriptions are linked to Pharmacy Claims
@@ -22,7 +22,7 @@ async function test() {
     const claims = await prisma.pharmacyClaim.findMany();
     console.log("Claims:", claims.length);
 
-    const er = await prisma.eRCase.findMany();
+    const er = await prisma.erCase.findMany();
     console.log("ER Cases:", er.length);
 
     const referrals = await prisma.referral.findMany();

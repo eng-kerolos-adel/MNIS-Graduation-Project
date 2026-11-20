@@ -321,7 +321,7 @@ class _LabPanelCardState extends State<_LabPanelCard> {
             ],
           ),
           const SizedBox(height: 12),
-          if (!p.isVerified && p.rows.isEmpty) ...[
+          if (!p.isVerified || p.rows.isEmpty) ...[
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),

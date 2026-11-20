@@ -64,7 +64,7 @@ class HomeScreen extends ConsumerWidget {
                         Text('MNIS',
                             style: AppTypography.headlineSm
                                 .copyWith(color: cs.primary, height: 1)),
-                        Text('Home',
+                        Text(l.navHome,
                             style: AppTypography.labelSm
                                 .copyWith(color: cs.onSurfaceVariant)),
                       ],

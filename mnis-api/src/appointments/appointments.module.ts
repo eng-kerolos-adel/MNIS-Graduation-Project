@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { NotifType, Role } from '@prisma/client';
@@ -63,6 +63,30 @@ export class AppointmentsService {
     return { kind: 'GLOBAL' as const, doctorId: null as string | null, labUserIds: [] as string[], facilityEn: staff.facilityEn };
   }
 
+  private async assertAppointmentInScope(appt: { type: string; doctorId: string | null }, u: AuthUser) {
+    const scope = await this.resolveStaffScope(u);
+    if (scope.kind === 'GLOBAL') return scope;
+    if (scope.kind === 'DOCTOR') {
+      if (appt.type !== 'CLINIC' || (appt.doctorId && appt.doctorId !== u.id)) {
+        throw new ForbiddenException('OUT_OF_FACILITY_SCOPE');
+      }
+      return scope;
+    }
+    if (scope.kind === 'CLINIC_ASSISTANT') {
+      if (appt.type !== 'CLINIC' || (scope.doctorId && appt.doctorId && appt.doctorId !== scope.doctorId)) {
+        throw new ForbiddenException('OUT_OF_FACILITY_SCOPE');
+      }
+      return scope;
+    }
+    if (scope.kind === 'LAB') {
+      if (appt.type !== 'LAB' || (appt.doctorId && !scope.labUserIds.includes(appt.doctorId))) {
+        throw new ForbiddenException('OUT_OF_FACILITY_SCOPE');
+      }
+      return scope;
+    }
+    return scope;
+  }
+
   // ---- appointments (Clinic Assistant handles only their Doctor's CLINIC; Lab Reception handles only their Lab's LAB) ----
   async listAppointments(u: AuthUser) {
     const scope = await this.resolveStaffScope(u);
@@ -97,13 +121,20 @@ export class AppointmentsService {
     if (!existing || existing.status !== 'REQUESTED') {
       throw new BadRequestException('INVALID_STATE_TRANSITION');
     }
+    const scope = await this.assertAppointmentInScope(existing, u);
 
-    const targetProviderId = dto.doctorId || existing.doctorId || u.id;
+    const targetProviderId = dto.doctorId || existing.doctorId || scope.doctorId || u.id;
     const provider = await this.prisma.user.findUnique({
       where: { id: targetProviderId },
-      select: { id: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true },
+      select: { id: true, role: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true },
     });
     if (!provider) throw new BadRequestException('DOCTOR_NOT_FOUND');
+    if (existing.type === 'CLINIC' && provider.role !== Role.DOCTOR) {
+      throw new BadRequestException('DOCTOR_NOT_FOUND');
+    }
+    if (existing.type === 'LAB' && provider.role !== Role.LAB_TECH) {
+      throw new BadRequestException('LAB_NOT_FOUND');
+    }
 
     const r = await this.prisma.appointment.updateMany({
       where: { id, status: 'REQUESTED' },
@@ -128,14 +159,20 @@ export class AppointmentsService {
         }
       } else {
         const panel = appt.testPanel || appt.reason;
+        const sampleTypeEn = provider.facilityEn
+          ? `Venous Blood / Lab Specimen @ ${provider.facilityEn}`
+          : 'Venous Blood / Lab Specimen';
+        const sampleTypeAr = (provider.facilityAr || provider.facilityEn)
+          ? `عينة معملية @ ${provider.facilityAr || provider.facilityEn}`
+          : 'عينة معملية';
         const sample = await this.prisma.labSample.create({
           data: {
             barcode: `EG${randomBytes(4).toString('hex').toUpperCase()}`,
             patientId: appt.patientId,
             panelEn: panel,
             panelAr: panel,
-            sampleTypeEn: 'Venous Blood / Lab Specimen',
-            sampleTypeAr: 'عينة معملية',
+            sampleTypeEn,
+            sampleTypeAr,
             orderedById: targetProviderId,
             priority: 'ROUTINE',
             status: 'AWAITING_COLLECTION',
@@ -164,7 +201,7 @@ export class AppointmentsService {
       throw new BadRequestException('APPOINTMENT_NOT_CONFIRMED_FOR_CHECKIN');
     }
 
-    const scope = await this.resolveStaffScope(u);
+    const scope = await this.assertAppointmentInScope(appt, u);
     const doctorId = appt.doctorId || scope.doctorId;
 
     const existingVisit = await this.prisma.visit.findFirst({
@@ -214,6 +251,10 @@ export class AppointmentsService {
   }
 
   async rejectAppointment(id: string, dto: DecideDto, u: AuthUser) {
+    const existing = await this.prisma.appointment.findUnique({ where: { id }, select: { type: true, doctorId: true, status: true } });
+    if (!existing || existing.status !== 'REQUESTED') throw new BadRequestException('INVALID_STATE_TRANSITION');
+    await this.assertAppointmentInScope(existing, u);
+
     const r = await this.prisma.appointment.updateMany({ where: { id, status: 'REQUESTED' }, data: { status: 'REJECTED', note: dto.note, decidedById: u.id, decidedAt: new Date() } });
     if (r.count === 0) throw new BadRequestException('INVALID_STATE_TRANSITION');
     const appt = await this.prisma.appointment.findUnique({ where: { id }, include: patientInc });
@@ -261,10 +302,17 @@ export class AppointmentsService {
   /** Approval clones the old prescription, computes its canonical HMAC-SHA256 seal, signs it directly into the Pharmacy queue, and notifies the citizen. */
   async approveRenewal(id: string, u: AuthUser) {
     const result = await this.prisma.$transaction(async (tx) => {
+      const req = await tx.renewalRequest.findUnique({
+        where: { id },
+        include: { prescription: { include: { items: true } } },
+      });
+      if (!req) throw new NotFoundException('RENEWAL_NOT_FOUND');
+      if (u.role === Role.DOCTOR && req.prescription.physicianId !== u.id) {
+        throw new ForbiddenException('NOT_YOUR_PRESCRIPTION');
+      }
       const claimed = await tx.renewalRequest.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'APPROVED', decidedById: u.id, decidedAt: new Date() } });
       if (claimed.count === 0) throw new BadRequestException('INVALID_STATE_TRANSITION');
-      const req = await tx.renewalRequest.findUniqueOrThrow({ where: { id } });
-      const old = await tx.prescription.findUnique({ where: { id: req.prescriptionId }, include: { items: true } });
+      const old = req.prescription;
       if (!old) throw new NotFoundException('ORIGINAL_PRESCRIPTION_NOT_FOUND');
       const created = await tx.prescription.create({
         data: {
@@ -285,7 +333,44 @@ export class AppointmentsService {
       const signed = await tx.prescription.update({
         where: { id: created.id },
         data: { status: 'SIGNED', signedAt: new Date(), signatureHash: this.crypto.hmacSign(canonical) },
+        include: { items: true },
       });
+
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1;
+      const resetAt = new Date(year, month, 1);
+      for (const item of signed.items) {
+        if (signed.isChronic || item.durationDays >= 30 || item.monthlyAllowance) {
+          const limit = item.monthlyAllowance ?? item.quantity;
+          await tx.chronicAllowance.upsert({
+            where: {
+              patientId_itemId_periodYear_periodMonth: {
+                patientId: signed.patientId,
+                itemId: item.id,
+                periodYear: year,
+                periodMonth: month,
+              },
+            },
+            create: {
+              patientId: signed.patientId,
+              prescriptionId: signed.id,
+              itemId: item.id,
+              nameEn: item.nameEn,
+              nameAr: item.nameAr,
+              monthlyLimit: limit,
+              consumed: 0,
+              periodYear: year,
+              periodMonth: month,
+              resetAt,
+            },
+            update: {
+              monthlyLimit: limit,
+            },
+          });
+        }
+      }
+
       await tx.renewalRequest.update({ where: { id }, data: { newPrescriptionId: signed.id } });
       return { renewalId: id, draftPrescriptionId: signed.id, code: signed.code, patientId: old.patientId };
     });
@@ -306,6 +391,14 @@ export class AppointmentsService {
   }
 
   async rejectRenewal(id: string, dto: DecideDto, u: AuthUser) {
+    const existing = await this.prisma.renewalRequest.findUnique({
+      where: { id },
+      include: { prescription: { select: { physicianId: true } } },
+    });
+    if (!existing) throw new NotFoundException('RENEWAL_NOT_FOUND');
+    if (u.role === Role.DOCTOR && existing.prescription.physicianId !== u.id) {
+      throw new ForbiddenException('NOT_YOUR_PRESCRIPTION');
+    }
     const r = await this.prisma.renewalRequest.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'REJECTED', note: dto.note, decidedById: u.id, decidedAt: new Date() } });
     if (r.count === 0) throw new BadRequestException('INVALID_STATE_TRANSITION');
     const updated = await this.prisma.renewalRequest.findUnique({ where: { id } });

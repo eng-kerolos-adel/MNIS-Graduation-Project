@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -22,6 +24,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   late AnimationController _fadeCtrl;
   late Animation<double> _scale;
   late Animation<double> _fade;
+  Timer? _splashTimer;
+  Completer<void>? _delayCompleter;
 
   @override
   void initState() {
@@ -49,10 +53,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     // Run the minimum splash animation time and the session bootstrap (which
     // tries to silently restore a saved login) in parallel, so a slow/absent
     // network never makes the splash screen feel stuck.
-    final minDelay = Future<void>.delayed(const Duration(milliseconds: 2200));
+    final completer = Completer<void>();
+    _delayCompleter = completer;
+    _splashTimer = Timer(const Duration(milliseconds: 2200), () {
+      if (!completer.isCompleted) completer.complete();
+    });
     final sessionFuture = ref.read(sessionControllerProvider.future);
-    final user = await sessionFuture;
-    await minDelay;
+    final user = await sessionFuture.catchError((_) => null);
+    await completer.future;
     if (!mounted) return;
 
     if (user != null) {
@@ -68,6 +76,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
       // app shows anything — this is what makes biometric a real re-entry
       // gate instead of a thing that only fires once at setup.
       final biometricOn = await SecureSessionStore.instance.readBiometricEnabled();
+      if (!mounted) return;
       context.go(biometricOn ? AppRoutes.appLock : AppRoutes.home);
       return;
     }
@@ -84,6 +93,10 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
   @override
   void dispose() {
+    _splashTimer?.cancel();
+    if (_delayCompleter != null && !_delayCompleter!.isCompleted) {
+      _delayCompleter!.complete();
+    }
     _scaleCtrl.dispose();
     _fadeCtrl.dispose();
     super.dispose();

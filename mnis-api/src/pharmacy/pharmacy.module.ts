@@ -4,11 +4,13 @@ import {
   Post,
   Patch,
   Param,
+  ParseUUIDPipe,
   Body,
   Query,
   Injectable,
   Module,
   BadRequestException,
+  ConflictException,
   NotFoundException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -107,6 +109,8 @@ export class PharmacyService {
     if (rx.status !== 'DISPENSED') {
       throw new BadRequestException('Prescription must be dispensed before claiming');
     }
+    const existing = await this.prisma.pharmacyClaim.findUnique({ where: { prescriptionId: rx.id } });
+    if (existing) throw new ConflictException('CLAIM_ALREADY_EXISTS');
 
     let totalAmount = 0;
     for (const item of rx.items) {
@@ -168,10 +172,16 @@ export class PharmacyService {
   }
 
   async submitClaim(id: string) {
-    const c = await this.prisma.pharmacyClaim.update({
-      where: { id },
-      data: { status: ClaimStatus.SUBMITTED }
+    const claimed = await this.prisma.pharmacyClaim.updateMany({
+      where: { id, status: ClaimStatus.PENDING },
+      data: { status: ClaimStatus.SUBMITTED },
     });
+    if (claimed.count === 0) {
+      const existing = await this.prisma.pharmacyClaim.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundException('Claim not found');
+      throw new BadRequestException('INVALID_STATE_TRANSITION');
+    }
+    const c = await this.prisma.pharmacyClaim.findUniqueOrThrow({ where: { id } });
     return {
       ...c,
       totalAmountEgp: c.totalAmount,
@@ -297,10 +307,21 @@ export class PharmacyService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const allowance = await tx.chronicAllowance.findUnique({ where: { id: dto.allowanceId } });
       if (!allowance) throw new NotFoundException('Allowance not found');
+      if (allowance.resetAt <= new Date()) {
+        throw new BadRequestException('ALLOWANCE_PERIOD_EXPIRED');
+      }
 
       const newConsumed = allowance.consumed + dto.quantity;
       if (newConsumed > allowance.monthlyLimit) {
         throw new BadRequestException('Exceeds monthly limit');
+      }
+
+      const claimed = await tx.chronicAllowance.updateMany({
+        where: { id: allowance.id, consumed: allowance.consumed },
+        data: { consumed: newConsumed },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException('ALLOWANCE_CONCURRENT_UPDATE');
       }
 
       const drug = await tx.drugInventory.findFirst({
@@ -318,10 +339,7 @@ export class PharmacyService {
         });
       }
 
-      return tx.chronicAllowance.update({
-        where: { id: allowance.id },
-        data: { consumed: newConsumed },
-      });
+      return tx.chronicAllowance.findUniqueOrThrow({ where: { id: allowance.id } });
     });
 
     const citizenUser = await this.prisma.user.findUnique({
@@ -403,7 +421,7 @@ export class PharmacyController {
 
   @Patch('claims/:id/submit')
   @Roles(Role.PHARMACIST, Role.ADMIN)
-  submitClaim(@Param('id') id: string) {
+  submitClaim(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.submitClaim(id);
   }
 
@@ -415,7 +433,7 @@ export class PharmacyController {
   }
 
   @Post('settlements/run')
-  @Roles(Role.PHARMACIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.PHARMACIST, Role.ADMIN)
   runSettlement(@Body() dto: RunSettlementDto, @CurrentUser() user: AuthUser) {
     return this.svc.runSettlement(dto, user.id);
   }
@@ -423,7 +441,7 @@ export class PharmacyController {
   // Allowances
   @Get('allowances/patient/:patientId')
   @Roles(Role.PHARMACIST, Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE)
-  getAllowances(@Param('patientId') patientId: string) {
+  getAllowances(@Param('patientId', ParseUUIDPipe) patientId: string) {
     return this.svc.getAllowances(patientId);
   }
 
@@ -448,7 +466,7 @@ export class PharmacyController {
 
   @Patch('inventory/:id')
   @Roles(Role.PHARMACIST, Role.ADMIN)
-  updateDrug(@Param('id') id: string, @Body() dto: UpdateDrugDto) {
+  updateDrug(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateDrugDto) {
     return this.svc.updateDrug(id, dto);
   }
 }

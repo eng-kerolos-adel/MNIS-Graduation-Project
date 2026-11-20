@@ -52,115 +52,118 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
     return Scaffold(
       backgroundColor: cs.surface,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // ─── Top bar ────────────────────────────────────────────────
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // Ministry badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: cs.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(20),
+      body: Directionality(
+        textDirection: isAr ? TextDirection.rtl : TextDirection.ltr,
+        child: SafeArea(
+          child: Column(
+            children: [
+              // ─── Top bar ────────────────────────────────────────────────
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // Ministry badge
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: cs.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.verified_user_rounded,
+                              size: 16, color: cs.secondary),
+                          const SizedBox(width: 6),
+                          Text(
+                            isAr
+                                ? 'جمهورية مصر العربية • وزارة الصحة'
+                                : 'Egypt Ministry of Health',
+                            style: AppTypography.labelSm
+                                .copyWith(color: cs.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.verified_user_rounded,
-                            size: 16, color: cs.secondary),
-                        const SizedBox(width: 6),
-                        Text(
-                          isAr
-                              ? 'جمهورية مصر العربية • وزارة الصحة'
-                              : 'Egypt Ministry of Health',
-                          style: AppTypography.labelSm
-                              .copyWith(color: cs.onSurfaceVariant),
-                        ),
-                      ],
+                    // Skip
+                    TextButton(
+                      onPressed: _finish,
+                      child: Text(l.skip,
+                          style: AppTypography.labelLg
+                              .copyWith(color: cs.secondary)),
                     ),
-                  ),
-                  // Skip
-                  TextButton(
-                    onPressed: _finish,
-                    child: Text(l.skip,
-                        style: AppTypography.labelLg
-                            .copyWith(color: cs.secondary)),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
 
-            // ─── Page View ──────────────────────────────────────────────
-            Expanded(
-              child: PageView(
-                controller: _ctrl,
-                onPageChanged: (i) => setState(() => _page = i),
-                children: [
-                  _Slide1(l: l, cs: cs),
-                  _Slide2(l: l, cs: cs),
-                  _Slide3(l: l, cs: cs),
-                ],
+              // ─── Page View ──────────────────────────────────────────────
+              Expanded(
+                child: PageView(
+                  controller: _ctrl,
+                  onPageChanged: (i) => setState(() => _page = i),
+                  children: [
+                    _Slide1(l: l, cs: cs, isAr: isAr),
+                    _Slide2(l: l, cs: cs, isAr: isAr),
+                    _Slide3(l: l, cs: cs, isAr: isAr),
+                  ],
+                ),
               ),
-            ),
 
-            // ─── Bottom controls ─────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-              child: Column(
-                children: [
-                  // Dots
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(3, (i) {
-                      final active = i == _page;
-                      return AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        margin: const EdgeInsets.symmetric(horizontal: 4),
-                        width: active ? 28 : 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: active
-                              ? cs.primary
-                              : cs.outlineVariant,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      );
-                    }),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // Next / Get Started button
-                  ElevatedButton(
-                    onPressed: _next,
-                    child: Row(
+              // ─── Bottom controls ─────────────────────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                child: Column(
+                  children: [
+                    // Dots
+                    Row(
                       mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          _page < 2 ? l.next : l.getStarted,
-                          style: AppTypography.headlineSm
-                              .copyWith(color: cs.onPrimary),
-                        ),
-                        const SizedBox(width: 8),
-                        Icon(
-                          isAr
-                              ? Icons.arrow_back_rounded
-                              : Icons.arrow_forward_rounded,
-                          color: cs.onPrimary,
-                        ),
-                      ],
+                      children: List.generate(3, (i) {
+                        final active = i == _page;
+                        return AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          width: active ? 28 : 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: active
+                                ? cs.primary
+                                : cs.outlineVariant,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        );
+                      }),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 20),
+
+                    // Next / Get Started button
+                    ElevatedButton(
+                      onPressed: _next,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            _page < 2 ? l.next : l.getStarted,
+                            style: AppTypography.headlineSm
+                                .copyWith(color: cs.onPrimary),
+                          ),
+                          const SizedBox(width: 8),
+                          Icon(
+                            isAr
+                                ? Icons.arrow_back_rounded
+                                : Icons.arrow_forward_rounded,
+                            color: cs.onPrimary,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -171,7 +174,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 class _Slide1 extends StatelessWidget {
   final AppLocalizations l;
   final ColorScheme cs;
-  const _Slide1({required this.l, required this.cs});
+  final bool isAr;
+  const _Slide1({required this.l, required this.cs, required this.isAr});
 
   @override
   Widget build(BuildContext context) {
@@ -198,7 +202,9 @@ class _Slide1 extends StatelessWidget {
                                 color: AppColors.tertiaryFixed, size: 20),
                             const SizedBox(width: 6),
                             Text(
-                              'منظومة التأمين الصحي الشامل',
+                              isAr
+                                  ? 'منظومة التأمين الصحي الشامل'
+                                  : 'Universal Health Insurance',
                               style: AppTypography.labelSm
                                   .copyWith(color: Colors.white70),
                             ),
@@ -211,7 +217,7 @@ class _Slide1 extends StatelessWidget {
                             color: Colors.white.withOpacity(0.2),
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Text('رسمي وخاص',
+                          child: Text(isAr ? 'رسمي وخاص' : 'Public & Private',
                               style: AppTypography.labelSm
                                   .copyWith(color: Colors.white)),
                         ),
@@ -247,7 +253,10 @@ class _Slide1 extends StatelessWidget {
                               const Icon(Icons.fingerprint,
                                   size: 14, color: Colors.white70),
                               const SizedBox(width: 4),
-                              Text('MNIS • مصر الرقمية',
+                              Text(
+                                  isAr
+                                      ? 'MNIS • مصر الرقمية'
+                                      : 'MNIS • Digital Egypt',
                                   style: AppTypography.labelSm
                                       .copyWith(color: Colors.white70)),
                             ],
@@ -260,7 +269,10 @@ class _Slide1 extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('البطاقة الذكية الموحدة',
+                        Text(
+                            isAr
+                                ? 'البطاقة الذكية الموحدة'
+                                : 'Unified Smart Card',
                             style: AppTypography.labelSm
                                 .copyWith(color: Colors.white60)),
                         Text('3-010101-12345',
@@ -282,34 +294,36 @@ class _Slide1 extends StatelessWidget {
               Icon(Icons.local_hospital_rounded, size: 16, color: cs.secondary),
               const SizedBox(width: 6),
               Text(
-                'نظام الهوية الطبية الموحدة',
+                isAr
+                    ? 'نظام الهوية الطبية الموحدة'
+                    : 'Unified Medical Identity System',
                 style: AppTypography.labelMd.copyWith(color: cs.secondary),
               ),
             ],
           ),
           const SizedBox(height: 8),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding1Title,
                 style: AppTypography.headlineLg
                     .copyWith(color: cs.onSurface),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
           const SizedBox(height: 4),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding1Subtitle,
                 style: AppTypography.headlineSm
                     .copyWith(color: cs.secondary),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
           const SizedBox(height: 8),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding1Body,
                 style: AppTypography.bodyMd
                     .copyWith(color: cs.onSurfaceVariant),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
 
           const SizedBox(height: 20),
@@ -350,10 +364,23 @@ class _Slide1 extends StatelessWidget {
 class _Slide2 extends StatelessWidget {
   final AppLocalizations l;
   final ColorScheme cs;
-  const _Slide2({required this.l, required this.cs});
+  final bool isAr;
+  const _Slide2({required this.l, required this.cs, required this.isAr});
 
   @override
   Widget build(BuildContext context) {
+    final features = isAr
+        ? const [
+            'فوري وآمن — يعمل بدون إنترنت',
+            'مشفر بمعيار AES-256 السيادي',
+            'مقبول في كل المستشفيات الحكومية والخاصة',
+          ]
+        : const [
+            'Instant & secure — works offline',
+            'Encrypted with sovereign AES-256',
+            'Accepted in all public & private hospitals',
+          ];
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
@@ -417,33 +444,31 @@ class _Slide2 extends StatelessWidget {
           const SizedBox(height: 24),
 
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding2Title,
                 style: AppTypography.headlineLg.copyWith(color: cs.onSurface),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
           const SizedBox(height: 4),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding2Subtitle,
                 style: AppTypography.headlineSm.copyWith(color: cs.secondary),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
           const SizedBox(height: 8),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding2Body,
                 style: AppTypography.bodyMd
                     .copyWith(color: cs.onSurfaceVariant),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
 
           const SizedBox(height: 20),
 
           // Features list
-          ...['فوري وآمن — يعمل بدون إنترنت',
-            'مشفر بمعيار AES-256 السيادي',
-            'مقبول في كل المستشفيات الحكومية والخاصة'].map((f) => Padding(
+          ...features.map((f) => Padding(
             padding: const EdgeInsets.only(bottom: 10),
             child: Row(
               children: [
@@ -476,10 +501,27 @@ class _Slide2 extends StatelessWidget {
 class _Slide3 extends StatelessWidget {
   final AppLocalizations l;
   final ColorScheme cs;
-  const _Slide3({required this.l, required this.cs});
+  final bool isAr;
+  const _Slide3({required this.l, required this.cs, required this.isAr});
 
   @override
   Widget build(BuildContext context) {
+    final tags = isAr
+        ? const [
+            'فصيلة الدم',
+            'الحساسية الخطيرة',
+            'التشخيص الحيوي',
+            'جهة الطوارئ',
+            'الطبيب المعالج',
+          ]
+        : const [
+            'Blood Type',
+            'Critical Allergies',
+            'Vital Diagnoses',
+            'Emergency Contact',
+            'Attending Physician',
+          ];
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
@@ -543,25 +585,25 @@ class _Slide3 extends StatelessWidget {
           const SizedBox(height: 24),
 
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding3Title,
                 style: AppTypography.headlineLg.copyWith(color: cs.onSurface),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
           const SizedBox(height: 4),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding3Subtitle,
                 style: AppTypography.headlineSm.copyWith(color: cs.secondary),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
           const SizedBox(height: 8),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerStart,
             child: Text(l.onboarding3Body,
                 style: AppTypography.bodyMd
                     .copyWith(color: cs.onSurfaceVariant),
-                textAlign: TextAlign.right),
+                textAlign: TextAlign.start),
           ),
 
           const SizedBox(height: 20),
@@ -570,15 +612,14 @@ class _Slide3 extends StatelessWidget {
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: [
-              'فصيلة الدم', 'الحساسية الخطيرة', 'التشخيص الحيوي',
-              'جهة الطوارئ', 'الطبيب المعالج',
-            ].map((tag) => StatusBadge(
-                  label: tag,
-                  backgroundColor: cs.errorContainer,
-                  textColor: cs.onErrorContainer,
-                  fontSize: 12,
-                )).toList(),
+            children: tags
+                .map((tag) => StatusBadge(
+                      label: tag,
+                      backgroundColor: cs.errorContainer,
+                      textColor: cs.onErrorContainer,
+                      fontSize: 12,
+                    ))
+                .toList(),
           ),
         ],
       ),
@@ -625,7 +666,7 @@ class _TrustBadge extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(title,
                     style:

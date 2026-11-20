@@ -4,6 +4,7 @@ import {
   Post,
   Patch,
   Param,
+  ParseUUIDPipe,
   Body,
   Query,
   Injectable,
@@ -186,12 +187,14 @@ export class OrController {
   }
 
   @Post()
+  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN)
   create(@Body() dto: CreateOrCaseDto, @CurrentUser() user: AuthUser) {
     return this.svc.createCase(dto, user.id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateOrCaseDto) {
+  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN)
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateOrCaseDto) {
     return this.svc.updateCase(id, dto);
   }
 }

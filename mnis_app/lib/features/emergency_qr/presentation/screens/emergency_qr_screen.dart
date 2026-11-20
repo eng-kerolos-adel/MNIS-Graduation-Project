@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -82,6 +84,7 @@ class _EmergencyQrScreenState extends ConsumerState<EmergencyQrScreen>
     final isAr = locale.languageCode == 'ar';
     final cardAsync = ref.watch(emergencyCardProvider);
     final updatedAtAsync = ref.watch(emergencyCardUpdatedAtProvider);
+    final isSignedIn = ref.watch(sessionControllerProvider).value != null;
 
     return Scaffold(
       backgroundColor: cs.surface,
@@ -136,8 +139,10 @@ class _EmergencyQrScreenState extends ConsumerState<EmergencyQrScreen>
                         const SizedBox(height: 14),
                         _VitalsGrid(l: l, cs: cs, isAr: isAr, card: card),
                         const SizedBox(height: 14),
-                        _OrganDonorToggleCard(cs: cs, isAr: isAr, card: card),
-                        const SizedBox(height: 14),
+                        if (!widget.fromLogin && isSignedIn) ...[
+                          _OrganDonorToggleCard(cs: cs, isAr: isAr, card: card),
+                          const SizedBox(height: 14),
+                        ],
                         _AllergyStrip(cs: cs, isAr: isAr, card: card, locale: locale),
                         const SizedBox(height: 14),
                         const _EmergencyContacts(),
@@ -252,14 +257,14 @@ class _EmergencyBannerState extends State<_EmergencyBanner>
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(l.emergencyBanner,
                       style: AppTypography.labelSm
                           .copyWith(color: cs.onError.withOpacity(0.8), letterSpacing: 0.5)),
                   Text(l.emergencyBannerSub,
                       style: AppTypography.labelSm.copyWith(color: cs.onError),
-                      maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.right),
+                      maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.start),
                 ],
               ),
             ),
@@ -280,12 +285,16 @@ class _EmergencyBannerState extends State<_EmergencyBanner>
 }
 
 String _emergencyPayload(EmergencyCard c, DateTime? updatedAt) {
-  final allergies = c.allergies.map((a) => a.en).join(',');
-  final conditions = c.chronicConditions.map((x) => x.en).join(',');
-  return 'MNIS-EMERGENCY:{"mti":"${c.mti}","blood":"${c.bloodType}",'
-      '"allergies":[$allergies],"conditions":[$conditions],'
-      '"organDonor":${c.organDonor},"emergency":"137",'
-      '"updatedAt":"${(updatedAt ?? DateTime.now()).toIso8601String()}"}';
+  final payload = <String, dynamic>{
+    'mti': c.mti,
+    'blood': c.bloodType,
+    'allergies': c.allergies.map((a) => a.en).toList(),
+    'conditions': c.chronicConditions.map((x) => x.en).toList(),
+    'organDonor': c.organDonor,
+    'emergency': '137',
+    'updatedAt': (updatedAt ?? DateTime.now()).toIso8601String(),
+  };
+  return 'MNIS-EMERGENCY:${jsonEncode(payload)}';
 }
 
 // ── QR Hub Card ───────────────────────────────────────────────────────────────
@@ -807,19 +816,19 @@ class _OrganDonorToggleCardState extends ConsumerState<_OrganDonorToggleCard> {
           const SizedBox(width: 8),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   isAr ? 'تسجيل الموافقة على التبرع بالأعضاء' : 'Organ Donor Registry Consent',
                   style: AppTypography.labelLg.copyWith(color: cs.onSurface),
-                  textAlign: TextAlign.right,
+                  textAlign: TextAlign.start,
                 ),
                 Text(
                   isAr
                       ? 'يظهر فوراً على بطاقة الطوارئ QR/NFC لفرق الإنقاذ'
                       : 'Immediately synced to your Emergency QR/NFC rescue card',
                   style: AppTypography.labelSm.copyWith(color: cs.onSurfaceVariant),
-                  textAlign: TextAlign.right,
+                  textAlign: TextAlign.start,
                 ),
               ],
             ),

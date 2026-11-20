@@ -1,6 +1,9 @@
 import {
+  BadRequestException,
   Controller,
   Get,
+  NotFoundException,
+  ParseUUIDPipe,
   Post,
   Patch,
   Param,
@@ -12,6 +15,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role, BloodUnitStatus } from '@prisma/client';
 import { IsString, IsOptional, IsEnum, IsNumber } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
+import { CryptoService } from '../common/crypto.service';
 import { Audit, Roles } from '../common/decorators';
 
 // --- DTOs ---
@@ -57,7 +61,7 @@ export class UpdateBloodUnitDto {
 // --- Service ---
 @Injectable()
 export class BloodBankService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private crypto: CryptoService) {}
 
   private mapUnit(u: any) {
     let component = 'PACKED_RBC';
@@ -67,8 +71,9 @@ export class BloodBankService {
       if (comp) component = comp;
       if (vol && !isNaN(Number(vol))) volumeMl = Number(vol);
     }
+    const { donorNid: _nid, ...safe } = u;
     return {
-      ...u,
+      ...safe,
       bagBarcode: u.unitCode,
       component,
       volumeMl,
@@ -120,7 +125,7 @@ export class BloodBankService {
         bloodType: dto.bloodType,
         unitCode: code,
         donorName: dto.donorName,
-        donorNid: dto.donorNid,
+        donorNid: dto.donorNid ? this.crypto.encrypt(dto.donorNid) : undefined,
         notes: `${comp}|${vol}`,
         collectedAt: dto.collectedAt ? new Date(dto.collectedAt) : new Date(),
         expiresAt: new Date(dto.expiresAt)
@@ -130,8 +135,27 @@ export class BloodBankService {
   }
 
   async updateStatus(id: string, dto: UpdateBloodUnitDto) {
+    const existing = await this.prisma.bloodUnit.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('BLOOD_UNIT_NOT_FOUND');
+
+    const terminalStates: BloodUnitStatus[] = [
+      BloodUnitStatus.USED,
+      BloodUnitStatus.DISCARDED,
+      BloodUnitStatus.EXPIRED,
+    ];
+    if (
+      terminalStates.includes(existing.status) ||
+      (existing.expiresAt < new Date() &&
+        (dto.status === BloodUnitStatus.USED || dto.status === BloodUnitStatus.RESERVED))
+    ) {
+      throw new BadRequestException('INVALID_BLOOD_UNIT_STATE');
+    }
+
     const data: any = { status: dto.status };
-    if (dto.notes) data.notes = dto.notes;
+    if (dto.notes) {
+      const prefix = existing.notes?.split('|').slice(0, 2).join('|') || 'PACKED_RBC|450';
+      data.notes = `${prefix}|${dto.notes}`;
+    }
     if (dto.status === BloodUnitStatus.USED) {
       data.usedForId = dto.usedForId;
       data.usedAt = new Date();
@@ -167,12 +191,14 @@ export class BloodBankController {
   }
 
   @Post()
+  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN)
   create(@Body() dto: CreateBloodUnitDto) {
     return this.svc.create(dto);
   }
 
   @Patch(':id')
-  updateStatus(@Param('id') id: string, @Body() dto: UpdateBloodUnitDto) {
+  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN)
+  updateStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateBloodUnitDto) {
     return this.svc.updateStatus(id, dto);
   }
 }

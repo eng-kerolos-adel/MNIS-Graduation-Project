@@ -1,6 +1,6 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import '../network/api_client.dart';
 import '../models/models.dart';
+import 'session_provider.dart';
 
 part 'notifications_provider.g.dart';
 
@@ -8,15 +8,13 @@ part 'notifications_provider.g.dart';
 class NotificationsNotifier extends _$NotificationsNotifier {
   @override
   Future<List<AppNotification>> build() async {
-    final list = await ApiClient.instance.get(
-      '/notifications',
-      (json) => (json as List).map((x) => AppNotification.fromJson(x)).toList(),
-    );
-    return list;
+    final uid = ref.watch(sessionControllerProvider).value?.id;
+    if (uid == null) return const [];
+    return ref.watch(repositoryProvider).notifications();
   }
 
   Future<void> markRead(String id) async {
-    await ApiClient.instance.patch('/notifications/$id/read', {}, (j) => j);
+    await ref.read(repositoryProvider).markNotificationRead(id);
     final state = await future;
     this.state = AsyncValue.data(
       state.map((n) {

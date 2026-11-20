@@ -4,16 +4,20 @@ import {
   Post,
   Patch,
   Param,
+  ParseUUIDPipe,
   Body,
+  Req,
   NotFoundException,
   ConflictException,
   Injectable,
   Module,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Role, NfcCardStatus, NotifType } from '@prisma/client';
+import type { Request } from 'express';
 import { randomBytes } from 'crypto';
-import { IsEnum, IsString, IsUUID } from 'class-validator';
+import { IsEnum, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto.service';
 import { PrismaModule } from '../prisma/prisma.module';
@@ -34,6 +38,8 @@ export class RevokeCardDto {
 
 export class VerifyCardDto {
   @IsString()
+  @MinLength(6)
+  @MaxLength(128)
   token: string;
 }
 
@@ -74,7 +80,7 @@ export class NfcCardsService {
     if (!card) throw new NotFoundException('CARD_NOT_FOUND');
     if (card.status !== NfcCardStatus.ACTIVE) throw new ConflictException('CARD_NOT_ACTIVE');
 
-    return this.prisma.nfcCard.update({
+    const updated = await this.prisma.nfcCard.update({
       where: { id: cardId },
       data: {
         status: NfcCardStatus.REVOKED,
@@ -83,6 +89,24 @@ export class NfcCardsService {
         revokeReason: reason,
       },
     });
+
+    const citizenUser = await this.prisma.user.findUnique({
+      where: { patientId: card.patientId },
+      select: { id: true },
+    });
+    if (citizenUser) {
+      await this.notifs.sendToUser(
+        citizenUser.id,
+        NotifType.CARD_REVOKED,
+        'Emergency NFC Card Revoked',
+        'تم إيقاف بطاقة الطوارئ NFC الخاصة بك',
+        `Your emergency NFC card was revoked (Reason: ${reason}).`,
+        `تم إيقاف بطاقة الطوارئ الذكية الخاصة بك أمنياً (السبب: ${reason}).`,
+        { cardId: card.id, reason },
+      ).catch(() => undefined);
+    }
+
+    return updated;
   }
 
   async requestReplacement(patientId: string, userId: string) {
@@ -90,7 +114,7 @@ export class NfcCardsService {
       where: { patientId, status: NfcCardStatus.ACTIVE },
     });
 
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       if (activeCard) {
         await tx.nfcCard.update({
           where: { id: activeCard.id },
@@ -117,9 +141,29 @@ export class NfcCardsService {
 
       return { cardId: card.id, token: rawToken };
     });
+
+    if (activeCard) {
+      const citizenUser = await this.prisma.user.findUnique({
+        where: { patientId },
+        select: { id: true },
+      });
+      if (citizenUser) {
+        await this.notifs.sendToUser(
+          citizenUser.id,
+          NotifType.CARD_REVOKED,
+          'Emergency NFC Card Replaced',
+          'تم استبدال بطاقة الطوارئ NFC الخاصة بك',
+          'Your previous emergency NFC card was deactivated and replaced with a new active card.',
+          'تم إيقاف بطاقة الطوارئ الذكية السابقة وإصدار بطاقة بديلة مفعّلة لك.',
+          { oldCardId: activeCard.id, newCardId: created.cardId },
+        ).catch(() => undefined);
+      }
+    }
+
+    return created;
   }
 
-  async verify(token: string) {
+  async verify(token: string, ip?: string) {
     const clean = token.trim().replace(/^MNIS-MTI:/i, '');
     const tokenHash = this.crypto.sha256(clean);
     let card = await this.prisma.nfcCard.findUnique({
@@ -150,6 +194,7 @@ export class NfcCardsService {
         resourceType: 'BREAK_GLASS_NFC',
         resourceId: card.patientId,
         statusCode: 200,
+        ip: ip ?? null,
       },
     }).catch(() => undefined);
 
@@ -158,16 +203,26 @@ export class NfcCardsService {
       select: { id: true },
     });
     if (citizenUser) {
-      const cardRef = card.id.slice(0, 8).toUpperCase();
-      await this.notifs.sendToUser(
-        citizenUser.id,
-        NotifType.GENERAL,
-        'Emergency NFC Card Scanned',
-        'تنبيه طوارئ: تم مسح بطاقة الطوارئ NFC الخاصة بك',
-        `Your emergency NFC card (#${cardRef}) was scanned via Break-Glass emergency protocol.`,
-        `تم مسح بطاقة الطوارئ الذكية الخاصة بك (#${cardRef}) عبر بروتوكول الطوارئ السريع (Break-Glass).`,
-        { cardId: card.id, mti: card.patient.mti },
-      ).catch(() => undefined);
+      const recentScanNotif = await this.prisma.pushNotification.findFirst({
+        where: {
+          userId: citizenUser.id,
+          titleEn: 'Emergency NFC Card Scanned',
+          sentAt: { gte: new Date(Date.now() - 5 * 60_000) },
+        },
+        select: { id: true },
+      });
+      if (!recentScanNotif) {
+        const cardRef = card.id.slice(0, 8).toUpperCase();
+        await this.notifs.sendToUser(
+          citizenUser.id,
+          NotifType.GENERAL,
+          'Emergency NFC Card Scanned',
+          'تنبيه طوارئ: تم مسح بطاقة الطوارئ NFC الخاصة بك',
+          `Your emergency NFC card (#${cardRef}) was scanned via Break-Glass emergency protocol.`,
+          `تم مسح بطاقة الطوارئ الذكية الخاصة بك (#${cardRef}) عبر بروتوكول الطوارئ السريع (Break-Glass).`,
+          { cardId: card.id, mti: card.patient.mti },
+        ).catch(() => undefined);
+      }
     }
 
     return {
@@ -211,7 +266,7 @@ export class NfcCardsController {
 
   @Patch(':id/revoke')
   @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.DOCTOR)
-  revokeCard(@Param('id') id: string, @Body() dto: RevokeCardDto, @CurrentUser() user: AuthUser) {
+  revokeCard(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RevokeCardDto, @CurrentUser() user: AuthUser) {
     return this.svc.revoke(id, dto.revokeReason, user.id);
   }
 
@@ -222,14 +277,15 @@ export class NfcCardsController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('verify')
-  verifyCard(@Body() dto: VerifyCardDto) {
-    return this.svc.verify(dto.token);
+  verifyCard(@Body() dto: VerifyCardDto, @Req() req: Request) {
+    return this.svc.verify(dto.token, req.ip);
   }
 
   @Get('patient/:patientId')
   @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.DOCTOR, Role.EXECUTIVE)
-  listCards(@Param('patientId') patientId: string) {
+  listCards(@Param('patientId', ParseUUIDPipe) patientId: string) {
     return this.svc.listCards(patientId);
   }
 }

@@ -28,6 +28,7 @@ import {
 } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
+import { isProd } from '../config/env';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  DTOs
@@ -135,19 +136,16 @@ export class DoctorScheduleService implements OnModuleInit {
   }
 
   private async ensureNationwideRoster() {
-    const demoPassword = 'MnisDemo#2026!Secure';
-    const passwordHash = await argon2.hash(demoPassword);
-
-    await this.prisma.user.updateMany({
-      where: { email: { endsWith: '@mnis.demo' } },
-      data: { passwordHash, failedLogins: 0, lockedUntil: null, mustChangePassword: false },
-    });
+    if (isProd && process.env.SEED_ON_DEPLOY !== 'true') return;
 
     const alreadySeeded = await this.prisma.user.findUnique({
       where: { email: 'alborg.director@mnis.demo' },
       select: { id: true },
     });
     if (alreadySeeded) return;
+
+    const demoPassword = process.env.SEED_PASSWORD || 'MnisDemo#2026!Secure';
+    const passwordHash = await argon2.hash(demoPassword);
 
     const doctorsSpec: Array<[string, string, string, string, string, string, string, string]> = [
       ['doctor@mnis.demo', 'Dr. Tarek Mahmoud', 'د. طارق محمود', 'EGY-DOC-184920', 'Cardiology & Vascular Medicine', 'أمراض القلب والأوعية الدموية', 'Kasr Al-Ainy Cairo University Hospital (Cairo)', 'مستشفى قصر العيني الجامعي — القاهرة'],

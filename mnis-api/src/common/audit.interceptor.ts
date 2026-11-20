@@ -72,7 +72,7 @@ export class AuditInterceptor implements NestInterceptor {
             method: req.method,
             path: String(req.originalUrl ?? req.url).split('?')[0].slice(0, 300),
             resourceType: resourceType ?? null,
-            resourceId: req.params?.id ?? null,
+            resourceId: req.params?.id ?? req.params?.patientId ?? req.params?.docId ?? null,
             statusCode: status,
             ip: req.ip ?? null,
           },
